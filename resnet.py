@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch
 import numpy as np
-from  learner import Learner
 
 __all__ = ['ResNet', 'resnet50']
 

@@ -1,7 +1,7 @@
 from torchvision import datasets, transforms
 import torch
 import os
-import torch.utils.data.Sampler
+from torch.utils.data import Sampler
 
 def load_training(root_path, dir, batch_size, kwargs):
     transform = transforms.Compose(

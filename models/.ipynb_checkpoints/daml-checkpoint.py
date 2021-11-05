@@ -63,34 +63,55 @@ class MAML(Module):
 
     def reset_classifier(self):
         self.classifier.reset_parameters()
-
+    
+    def _outer_forward(self, x, params, episode):
+        """ Forward pass for the inner loop. """
+        feat = self.encoder(x, get_child_dict(params, 'encoder'), episode)
+        return feat
+    
     def _inner_forward(self, x, params, episode):
         """ Forward pass for the inner loop. """
         feat = self.encoder(x, get_child_dict(params, 'encoder'), episode)
         logits = self.classifier(feat, get_child_dict(params, 'classifier'))
-        return logits
+        return logits, feat
 
-    def _inner_iter(self, x, y, params, mom_buffer, episode, inner_args,
+    def _inner_iter(self, trn_pair1, trn_pair2, trn_group, params, mom_buffer, episode, inner_args,
                     detach):
         """ 
-    Performs one inner-loop iteration of MAML including the forward and 
-    backward passes and the parameter update.
-    Args:
-      x (float tensor, [n_way * n_shot, C, H, W]): per-episode support set.
-      y (int tensor, [n_way * n_shot]): per-episode support set labels.
-      params (dict): the model parameters BEFORE the update.
-      mom_buffer (dict): the momentum buffer BEFORE the update.
-      episode (int): the current episode index.
-      inner_args (dict): inner-loop optimization hyperparameters.
-      detach (bool): if True, detachs the graph for the current iteration.
-    Returns:
-      updated_params (dict): the model parameters AFTER the update.
-      mom_buffer (dict): the momentum buffer AFTER the update.
-    """
+        Performs one inner-loop iteration of MAML including the forward and 
+        backward passes and the parameter update.
+        Args:
+          x (float tensor, [n_way * n_shot, C, H, W]): per-episode support set.
+          y (int tensor, [n_way * n_shot]): per-episode support set labels.
+          params (dict): the model parameters BEFORE the update.
+          mom_buffer (dict): the momentum buffer BEFORE the update.
+          episode (int): the current episode index.
+          inner_args (dict): inner-loop optimization hyperparameters.
+          detach (bool): if True, detachs the graph for the current iteration.
+        Returns:
+          updated_params (dict): the model parameters AFTER the update.
+          mom_buffer (dict): the momentum buffer AFTER the update.
+        """
         with torch.enable_grad():
             # forward pass
-            logits = self._inner_forward(x, params, episode)
-            loss = F.cross_entropy(logits, y)
+            src_trn_data, src_trn_label = trn_group
+            src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
+            logits, _ = self._inner_forward(src_trn_data, params, episode)
+            loss = F.cross_entropy(logits, src_trn_label)
+            
+            pair1_tgt_data, i, pair1_src_data, j = trn_pair1
+            pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
+            pair1_feat_tgt = self._encoder_inner_forward(pair1_tgt_data, params, episode)
+            pair1_feat_src = self._encoder_inner_forward(pair1_src_data, params, episode)
+            
+            feat_diff = pair1_feat - pair2_feat
+            loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
+
+            pair2_src_data2, q = trn_pair2
+            pair2_src_data2 = pair2_src_data2.cuda()
+            pair2_feat_src = self._encoder_inner_forward(pair2_src_data2, params, episode)
+            loss += diff_loss(pair1_feat_src, pair2_feat_src)
+            
             # backward pass
             grads = autograd.grad(
                 loss,
@@ -122,7 +143,7 @@ class MAML(Module):
 
         return updated_params, mom_buffer
 
-    def _adapt(self, x, y, params, episode, inner_args, meta_train):
+    def _adapt(self, trn_pair1, trn_pair2, trn_group, params, inner_args, meta_train):
         """
     Performs inner-loop adaptation in MAML.
     Args:
@@ -137,8 +158,6 @@ class MAML(Module):
     Returns:
       params (dict): model paramters AFTER inner-loop adaptation.
     """
-        assert x.dim() == 4 and y.dim() == 1
-        assert x.size(0) == y.size(0)
 
         # Initializes a dictionary of momentum buffer for gradient descent in the
         # inner loop. It has the same set of keys as the parameter dictionary.
@@ -191,48 +210,65 @@ class MAML(Module):
 
         return params
 
-    def forward(self, x_shot, x_query, y_shot, inner_args, meta_train):
+    def forward(self, trn_pair1, trn_pair2, trn_group, tst_pair3, inner_args, meta_train, mark=1):
         """
-    Args:
-      x_shot (float tensor, [n_episode, n_way * n_shot, C, H, W]): support sets.
-      x_query (float tensor, [n_episode, n_way * n_query, C, H, W]): query sets.
-        (T: transforms, C: channels, H: height, W: width)
-      y_shot (int tensor, [n_episode, n_way * n_shot]): support set labels.
-      inner_args (dict, optional): inner-loop hyperparameters.
-      meta_train (bool): if True, the model is in meta-training.
-      
-    Returns:
-      logits (float tensor, [n_episode, n_way * n_shot, n_way]): predicted logits.
-    """
+        Args:
+          x_shot (float tensor, [n_episode, n_way * n_shot, C, H, W]): support sets.
+          x_query (float tensor, [n_episode, n_way * n_query, C, H, W]): query sets.
+            (T: transforms, C: channels, H: height, W: width)
+          y_shot (int tensor, [n_episode, n_way * n_shot]): support set labels.
+          inner_args (dict, optional): inner-loop hyperparameters.
+          meta_train (bool): if True, the model is in meta-training.
+
+        Returns:
+          logits (float tensor, [n_episode, n_way * n_shot, n_way]): predicted logits.
+        """
+        
+        
+        
         assert self.encoder is not None
         assert self.classifier is not None
-        assert x_shot.dim() == 5 and x_query.dim() == 5
-        assert x_shot.size(0) == x_query.size(0)
 
-        # a dictionary of parameters that will be updated in the inner loop
-        params = OrderedDict(self.named_parameters())
-        for name in list(params.keys()):
-            if not params[name].requires_grad or \
-              any(s in name for s in inner_args['frozen'] + ['temp']):
-                params.pop(name)
-
-        logits = []
-        for ep in range(x_shot.size(0)):
+        self.train()
+        if mark == 0:
+            src_trn_data, src_trn_label = trn_group
+            src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
+            logits, _ = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
+            loss = F.cross_entropy(logits, src_trn_label)
+        elif mark == 1:
+            # a dictionary of parameters that will be updated in the inner loop
+            params = OrderedDict(self.named_parameters())
+            for name in list(params.keys()):
+                if not params[name].requires_grad or \
+                  any(s in name for s in inner_args['frozen'] + ['temp']):
+                    params.pop(name)
             # inner-loop training
-            self.train()
+            pair3_tgt_data1, m, pair3_tgt_data2, n = tst_pair3
             if not meta_train:
                 for m in self.modules():
                     if isinstance(m, BatchNorm2d) and not m.is_episodic():
                         m.eval()
-            updated_params = self._adapt(x_shot[ep], y_shot[ep], params, ep,
+            updated_params = self._adapt(trn_pair1, trn_pair2, trn_group, params, 0,
                                          inner_args, meta_train)
             # inner-loop validation
             with torch.set_grad_enabled(meta_train):
                 self.eval()
-                logits_ep = self._inner_forward(x_query[ep], updated_params,
-                                                ep)
-            logits.append(logits_ep)
+                pair3_tgt_data1, pair3_tgt_data2 = pair3_tgt_data1.cuda(), pair3_tgt_data2.cuda()
+                feat1 = self._encoder_inner_forward(pair3_tgt_data1, updated_params, 0)
+                feat2 = self._encoder_inner_forward(pair3_tgt_data2, updated_params, 0)
+                loss = diff_loss(feat1, feat2)
 
-        self.train(meta_train)
-        logits = torch.stack(logits)
-        return logits
+            self.train(meta_train)
+        
+        if mark == 2:
+            src_trn_data, src_trn_label = trn_group
+            src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
+            logits, feat = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
+            return logits, feat
+        return loss
+
+    def diff_loss(self, data1, data2):
+        data1_norm = torch.norm(data1, p=2, dim=0)
+        data2_norm = torch.norm(data2, p=2, dim=0)
+        channel_sim = torch.matmul(torch.transpose(data1 / data1_norm), data2 / data2_norm) / torch.sqrt(data1.size(0))
+        return torch.mean(torch.abs(torch.sum(channel_sim, dim=1)))
