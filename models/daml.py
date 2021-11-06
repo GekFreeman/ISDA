@@ -8,7 +8,8 @@ import torch.utils.checkpoint as cp
 from . import encoders
 from . import classifiers
 from .modules import get_child_dict, Module, BatchNorm2d
-
+import numpy as np
+import pdb
 
 def make(enc_name, enc_args, clf_name, clf_args):
     """
@@ -101,16 +102,16 @@ class MAML(Module):
             
             pair1_tgt_data, i, pair1_src_data, j = trn_pair1
             pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
-            pair1_feat_tgt = self._encoder_inner_forward(pair1_tgt_data, params, episode)
-            pair1_feat_src = self._encoder_inner_forward(pair1_src_data, params, episode)
+            pair1_feat_tgt = self._outer_forward(pair1_tgt_data, params, episode)
+            pair1_feat_src = self._outer_forward(pair1_src_data, params, episode)
             
-            feat_diff = pair1_feat - pair2_feat
+            feat_diff = pair1_feat_tgt - pair1_feat_src
             loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
 
             pair2_src_data2, q = trn_pair2
             pair2_src_data2 = pair2_src_data2.cuda()
-            pair2_feat_src = self._encoder_inner_forward(pair2_src_data2, params, episode)
-            loss += diff_loss(pair1_feat_src, pair2_feat_src)
+            pair2_feat_src = self._outer_forward(pair2_src_data2, params, episode)
+            loss += self._diff_loss(pair1_feat_src, pair2_feat_src)
             
             # backward pass
             grads = autograd.grad(
@@ -143,7 +144,7 @@ class MAML(Module):
 
         return updated_params, mom_buffer
 
-    def _adapt(self, trn_pair1, trn_pair2, trn_group, params, inner_args, meta_train):
+    def _adapt(self, trn_pair1, trn_pair2, trn_group, params, inner_args, meta_train, episode):
         """
     Performs inner-loop adaptation in MAML.
     Args:
@@ -186,7 +187,7 @@ class MAML(Module):
             detach = not torch.is_grad_enabled(
             )  # detach graph in the first pass
             self.is_first_pass(detach)
-            params, mom_buffer = self._inner_iter(x, y, params, mom_buffer,
+            params, mom_buffer = self._inner_iter(trn_pair1, trn_pair2, trn_group, params, mom_buffer,
                                                   int(episode), inner_args,
                                                   detach)
             state = tuple(
@@ -204,7 +205,7 @@ class MAML(Module):
                 mom_buffer = OrderedDict(
                     zip(mom_buffer_keys, state[-len(mom_buffer_keys):]))
             else:
-                params, mom_buffer = self._inner_iter(x, y, params, mom_buffer,
+                params, mom_buffer = self._inner_iter(trn_pair1, trn_pair2, trn_group, params, mom_buffer,
                                                       episode, inner_args,
                                                       not meta_train)
 
@@ -248,15 +249,15 @@ class MAML(Module):
                 for m in self.modules():
                     if isinstance(m, BatchNorm2d) and not m.is_episodic():
                         m.eval()
-            updated_params = self._adapt(trn_pair1, trn_pair2, trn_group, params, 0,
-                                         inner_args, meta_train)
+            updated_params = self._adapt(trn_pair1, trn_pair2, trn_group, params,
+                                         inner_args, meta_train, 0)
             # inner-loop validation
             with torch.set_grad_enabled(meta_train):
                 self.eval()
                 pair3_tgt_data1, pair3_tgt_data2 = pair3_tgt_data1.cuda(), pair3_tgt_data2.cuda()
-                feat1 = self._encoder_inner_forward(pair3_tgt_data1, updated_params, 0)
-                feat2 = self._encoder_inner_forward(pair3_tgt_data2, updated_params, 0)
-                loss = diff_loss(feat1, feat2)
+                feat1 = self._outer_forward(pair3_tgt_data1, updated_params, 0)
+                feat2 = self._outer_forward(pair3_tgt_data2, updated_params, 0)
+                loss = self._diff_loss(feat1, feat2)
 
             self.train(meta_train)
         
@@ -267,8 +268,13 @@ class MAML(Module):
             return logits, feat
         return loss
 
-    def diff_loss(self, data1, data2):
-        data1_norm = torch.norm(data1, p=2, dim=0)
-        data2_norm = torch.norm(data2, p=2, dim=0)
-        channel_sim = torch.matmul(torch.transpose(data1 / data1_norm), data2 / data2_norm) / torch.sqrt(data1.size(0))
+    def _diff_loss(self, data1, data2):
+        try:
+            data1_norm = torch.norm(data1, p=2, dim=0)
+            data2_norm = torch.norm(data2, p=2, dim=0)
+            data1 = data1 / data1_norm
+            data2 = data2 / data2_norm
+            channel_sim = torch.matmul(data1.transpose(0,1), data2) / np.sqrt(data1.size(0))
+        except:
+            pdbl.set_trace()
         return torch.mean(torch.abs(torch.sum(channel_sim, dim=1)))

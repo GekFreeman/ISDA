@@ -18,12 +18,13 @@ import utils.optimizers as optimizers
 import models
 import yaml
 from tqdm import tqdm
+import torch.nn as nn
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Training settings
-pretrain_epochs = 1
-batch_size = 32
+pretrain_epochs = 5
+batch_size = 4
 iteration = 10000
 lr = [0.001, 0.01]
 LEARNING_RATE = 0.001
@@ -160,7 +161,7 @@ def train(config):
             tgt_idx, src_indices = index_generate_sim(tgt_idx=tgt_spt_idx, src_idx=tgt_spt_src, src_prob=tgt_spt_src_prob)
             pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size, tgt_idx, kwargs)
             pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size, src_indices, kwargs)
-            
+
             src_qry_idx1, src_qry_idx2 = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
             pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size, src_qry_idx2, kwargs)
 
@@ -181,22 +182,23 @@ def train(config):
 
             pair3_iter_a = iter(pair_3_target_loader1)
             pair3_iter_b = iter(pair_3_target_loader2) 
-
             
             ############### Meta-Trainging
             for data in tqdm(pair1_target1_loader, desc='meta-train', leave=False):
                 pair1_tgt_data, pair1_tgt_label = data
-                pair1_src_data, pair1_src_label = pair1_iter_b.next()
-                trn_pair1 = [pair1_tgt_data, pair1_tgt_label, pair1_src_data, pair1_src_label]
                 
-                pair2_src_data2, pair2_src_label2 = pair2_iter_b.next()
+                
+                pair1_src_data, pair1_src_label,  pair1_iter_b = save_iter(pair1_iter_b, pair1_source1_loader)
+                trn_pair1 = [pair1_tgt_data, pair1_tgt_label, pair1_src_data, pair1_src_label]
+
+                pair2_src_data2, pair2_src_label2, pair2_iter_b = save_iter(pair2_iter_b, pair2_source1_loader2)
                 trn_pair2 = [pair2_src_data2, pair2_src_label2]
                 
-                src_trn_data, src_trn_label = trn_cls.next()
+                src_trn_data, src_trn_label, trn_cls = save_iter(trn_cls, cls_source1_loader)
                 trn_group = [src_trn_data, src_trn_label]
                 
-                pair3_tgt_data1, pair3_tgt_label1 = pair3_iter_a.next()
-                pair3_tgt_data2, pair3_tgt_label2 = pair3_iter_b.next()
+                pair3_tgt_data1, pair3_tgt_label1, pair3_iter_a = save_iter(pair3_iter_a, pair_3_target_loader1)
+                pair3_tgt_data2, pair3_tgt_label2, pair3_iter_b = save_iter(pair3_iter_b, pair_3_target_loader2)
                 tst_pair3 = [pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2]
                 
                 loss = model(trn_pair1,
@@ -229,6 +231,7 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
     tgt_qry_label = []
     src_qry_label = np.empty(shape=(0))
     idx = idx_init
+    domain_idx = 0
     with torch.no_grad():
         for data, target in data_loader:
             data, target = Variable(data), Variable(target)
@@ -245,17 +248,24 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
             if loader_type == 0:
                 tgt_hard = torch.where(pred.data.max(1)[0] < hard_threshold)[0].cpu().numpy()
                 tgt_simple = torch.where(pred.data.max(1)[0] >= hard_threshold)[0].cpu().numpy()
-                tgt_spt_idx = np.concatenate((tgt_spt_idx, [x + idx for x in tgt_hard]), axis=0)
-                tgt_qry_idx = np.concatenate((tgt_qry_idx, [x + idx for x in tgt_simple]), axis=0)
+                tgt_spt_idx = np.concatenate((tgt_spt_idx, [x + domain_idx for x in tgt_hard]), axis=0)
+                tgt_qry_idx = np.concatenate((tgt_qry_idx, [x + domain_idx for x in tgt_simple]), axis=0)
                 tgt_pred = pred.data.max(1)[1].cpu().numpy()
                 tgt_qry_label = np.concatenate((tgt_qry_label, tgt_pred[tgt_simple]), axis=0)
                 for spt_sample in tgt_hard:
                     sample_label = spt_sample + idx
-                    index.add_items(feat[spt_sample], sample_label)
+#                     index.add_items(feat[spt_sample], sample_label)
                     labels, distances = index.knn_query(feat[spt_sample], k=k)
+#                     labels = labels.flatten()
+#                     distances = distances.flatten();pdb.set_trace()
+#                     labels, distances = zip(*[(l, d) for l, d in zip(labels, distances) if l != sample_label]) # 删除搜索节点自身
+                    
+#                     labels = np.array(labels, dtype=np.int64).reshape(1, k)
+#                     distances = np.array(distances, dtype=np.float32).reshape(1, k)
+                    
                     tgt_spt_src = np.concatenate((tgt_spt_src, labels), axis=0)
                     tgt_spt_src_prob = np.concatenate((tgt_spt_src_prob, softmax(distances)), axis=0)
-                    index.mark_deleted(sample_label)
+#                     index.mark_deleted(sample_label)
             else:
                 index.add_items(feat, [x + idx for x in range(len(data))])
                 src_qry_label = np.concatenate([src_qry_label, target], axis=0)
@@ -264,6 +274,7 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
             correct += pred.eq(target.data.view_as(pred)).cpu().sum()
 
             idx += len(data)
+            domain_idx += len(data)
 
         print(source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
          correct, len(data_loader.dataset),
@@ -272,39 +283,15 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
         return idx, src_qry_label
     else:
         return tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label
-            
-def test(model):
-    model.eval()
-    test_loss = 0
-    correct = 0
-    correct1 = 0
-    correct2 = 0
-    with torch.no_grad():
-        for data, target in target_test_loader:
-            if cuda:
-                data, target = data.cuda(), target.cuda()
-            data, target = Variable(data), Variable(target)
-            pred1, pred2 = model(data, mark = 0)
 
-            pred1 = torch.nn.functional.softmax(pred1, dim=1)
-            pred2 = torch.nn.functional.softmax(pred2, dim=1)
-
-            pred = (pred1 + pred2) / 2
-            test_loss += F.nll_loss(F.log_softmax(pred, dim=1), target).item()
-
-            pred = pred.data.max(1)[1]
-            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
-            pred = pred1.data.max(1)[1]
-            correct1 += pred.eq(target.data.view_as(pred)).cpu().sum()
-            pred = pred2.data.max(1)[1]
-            correct2 += pred.eq(target.data.view_as(pred)).cpu().sum()
-
-        test_loss /= len(target_test_loader.dataset)
-        print(target_name, '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-            test_loss, correct, len(target_test_loader.dataset),
-            100. * correct / len(target_test_loader.dataset)))
-        print('\nsource1 accnum {}, source2 accnum {}'.format(correct1, correct2))
-    return correct
+def save_iter(loader_iterator, dataloader):
+    try:
+        data, label = loader_iterator.next()
+    except:
+        loader_iterator = iter(dataloader)
+        data, label = loader_iterator.next()
+    return data, label, loader_iterator
+        
 
 def index_generate_sim(tgt_idx, src_idx, src_prob):
     src_indices = [np.random.choice(x, size=1, p=src_prob[i]) for i,x in enumerate(src_idx)]
@@ -329,8 +316,8 @@ def index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle):
         idx_pair = list(zip(tgt_qry_idx, tgt_qry_idx_aux))
         np.random.shuffle(idx_pair)
         tgt_qry_idx, tgt_qry_idx_aux = zip(*idx_pair)
-        tgt_qry_idx = np.array(tgt_qry_idx, dtype=np.int64).flatten()
-        tgt_qry_idx_aux = np.array(tgt_qry_idx_aux, dtype=np.int64).flatten()
+    tgt_qry_idx = np.array(tgt_qry_idx, dtype=np.int64).flatten()
+    tgt_qry_idx_aux = np.array(tgt_qry_idx_aux, dtype=np.int64).flatten()
 
     return tgt_qry_idx, tgt_qry_idx_aux
     
