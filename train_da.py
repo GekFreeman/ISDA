@@ -17,6 +17,7 @@ import utils
 import utils.optimizers as optimizers
 import models
 import yaml
+from tqdm import tqdm
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -125,7 +126,7 @@ def train(config):
     ckpt_name += '_' + config['dataset'].replace('meta-', '')
 
     ckpt_path = os.path.join('./save', ckpt_name)
-    writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
+#     writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
 
     model = pretrain(model, optimizer, source1_name)
     ######## Incremental Learning
@@ -152,7 +153,7 @@ def train(config):
             print("HNSW:", end - start)
 
             model.train()
-            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+#             writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
             np.random.seed(epoch)
             
             # meta-training dataloader
@@ -325,14 +326,18 @@ def index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle):
     category_list = list(d.keys())
     tgt_qry_idx_aux = [np.random.choice(d[random_chice_the_other(tgt_qry_label[i],category_list)], size=1) for i in range(len(tgt_qry_idx))]
     if shuffle:
-        return zip(*np.random.shuffle(tgt_qry_idx, tgt_qry_idx_aux))
-    else:
-        return tgt_qry_idx, tgt_qry_idx_aux
+        idx_pair = list(zip(tgt_qry_idx, tgt_qry_idx_aux))
+        np.random.shuffle(idx_pair)
+        tgt_qry_idx, tgt_qry_idx_aux = zip(*idx_pair)
+        tgt_qry_idx = np.array(tgt_qry_idx, dtype=np.int64).flatten()
+        tgt_qry_idx_aux = np.array(tgt_qry_idx_aux, dtype=np.int64).flatten()
+
+    return tgt_qry_idx, tgt_qry_idx_aux
     
 def random_chice_the_other(x, categorys):
     categorys = set(categorys)
     categorys.discard(x)
-    return np.random.choice(list(categorys), size=1)
+    return int(np.random.choice(list(categorys), size=1).item())
     
 
     
