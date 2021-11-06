@@ -269,12 +269,11 @@ class MAML(Module):
         return loss
 
     def _diff_loss(self, data1, data2):
-        try:
-            data1_norm = torch.norm(data1, p=2, dim=0)
-            data2_norm = torch.norm(data2, p=2, dim=0)
-            data1 = data1 / data1_norm
-            data2 = data2 / data2_norm
-            channel_sim = torch.matmul(data1.transpose(0,1), data2) / np.sqrt(data1.size(0))
-        except:
-            pdbl.set_trace()
-        return torch.mean(torch.abs(torch.sum(channel_sim, dim=1)))
+        data1_norm = torch.norm(data1, p=2, dim=0)
+        data2_norm = torch.norm(data2, p=2, dim=0)
+        data1 = data1 / data1_norm
+        data2 = data2 / data2_norm
+        channel_sim = torch.matmul(data1.transpose(0,1), data2) / np.sqrt(data1.size(0))
+        channel_sim_diag = torch.eye(channel_sim.size(0)).cuda()
+        channel_sim_diag = channel_sim_diag * channel_sim
+        return torch.mean(torch.abs(torch.sum(channel_sim_diag, dim=1)))

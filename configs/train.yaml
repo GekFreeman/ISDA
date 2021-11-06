@@ -46,7 +46,8 @@ optimizer_args:
   weight_decay: 5.e-4
   schedule: step
   milestones:
-    - 120
-    - 140
+    - 10
+    - 20
+    - 50
 
-epoch: 1
+epoch: 100

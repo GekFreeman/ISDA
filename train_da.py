@@ -23,7 +23,7 @@ import torch.nn as nn
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Training settings
-pretrain_epochs = 5
+pretrain_epochs = 10
 batch_size = 4
 iteration = 10000
 lr = [0.001, 0.01]
@@ -50,7 +50,6 @@ ef_construction = 200
 num_elements = 5000
 dim = 512
 M = 16
-index = hnswlib.Index(space='l2', dim=dim) # dim 向量维度
     
 torch.manual_seed(seed)
 if cuda:
@@ -110,8 +109,9 @@ def train(config):
         model = models.make(config['encoder'], config['encoder_args'],
                             config['classifier'], config['classifier_args'])
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
-                                                  model.parameters(),
-                                                  **config['optimizer_args'])
+                                            model.parameters(),
+                                            **config['optimizer_args'])
+
     if cuda:
         model.cuda()
     
@@ -127,7 +127,7 @@ def train(config):
     ckpt_name += '_' + config['dataset'].replace('meta-', '')
 
     ckpt_path = os.path.join('./save', ckpt_name)
-#     writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
+    writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
 
     model = pretrain(model, optimizer, source1_name)
     ######## Incremental Learning
@@ -140,21 +140,30 @@ def train(config):
         source1_test_loader = data_loader.load_testing(root_path, source_name, batch_size, kwargs)
         target_test_loader = data_loader.load_testing(root_path, target_name, batch_size, kwargs)
         correct = 0
+        
+        optimizer, lr_scheduler = optimizers.make(config['optimizer'],
+                                    model.parameters(),
+                                    **config['optimizer_args'])
+
         for epoch in range(start_epoch, config['epoch'] + 1):
             
             ############### Data
             # 更新hnsw
+            index = hnswlib.Index(space='l2', dim=dim) # dim 向量维度
             index.init_index(max_elements=num_elements, ef_construction=ef_construction, M=M)
             index.set_ef(int(k * 1.2))
 
             start = time.time()
-            source_nums, src_qry_label = test_hnsw(model, source1_test_loader, original_source_name, loader_type=1)
-            tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label = test_hnsw(model, target_test_loader, original_target_name, loader_type=0, idx_init=source_nums, k=10)
+            source_nums, src_qry_label, acc_src = test_hnsw(model, source1_test_loader, original_source_name, loader_type=1, index=index)
+            tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label, acc_tgt = test_hnsw(model, target_test_loader, original_target_name, loader_type=0, idx_init=source_nums, k=10, index=index)
             end = time.time()
             print("HNSW:", end - start)
-
+            
+            writer.add_scalar(f'source_{source_name}_acc', acc_src, epoch)
+            writer.add_scalar(f'target_{target_name}_acc', acc_tgt, epoch)
+            
             model.train()
-#             writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
             np.random.seed(epoch)
             
             # meta-training dataloader
@@ -184,6 +193,7 @@ def train(config):
             pair3_iter_b = iter(pair_3_target_loader2) 
             
             ############### Meta-Trainging
+            iters = 0
             for data in tqdm(pair1_target1_loader, desc='meta-train', leave=False):
                 pair1_tgt_data, pair1_tgt_label = data
                 
@@ -207,15 +217,22 @@ def train(config):
                                tst_pair3,
                                inner_args,
                                meta_train=True)
-
+                writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
                 optimizer.zero_grad()
                 loss.backward()
                 for param in optimizer.param_groups[0]['params']:
                     nn.utils.clip_grad_value_(param, 10)
                 optimizer.step()
+                writer.flush()
+                iters += len(data)
+                
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+                
+                
             
 
-def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
+def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, index=None):
     """
     loader_type: 1表示源域，0表示目标域
     """
@@ -275,14 +292,14 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10):
 
             idx += len(data)
             domain_idx += len(data)
-
+        
+        acc = 100. * correct / len(data_loader.dataset)
         print(source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
-         correct, len(data_loader.dataset),
-            100. * correct / len(data_loader.dataset)))
+         correct, len(data_loader.dataset), acc))
     if loader_type == 1:
-        return idx, src_qry_label
+        return idx, src_qry_label, acc
     else:
-        return tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label
+        return tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label, acc
 
 def save_iter(loader_iterator, dataloader):
     try:
