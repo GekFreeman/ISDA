@@ -97,7 +97,7 @@ class MAML(Module):
             # forward pass
             src_trn_data, src_trn_label = trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
-            logits, _ = self._inner_forward(src_trn_data, params, episode)
+            logits, _ = self._inner_forward(src_trn_data, params, 0)
             loss = F.cross_entropy(logits, src_trn_label)
             
             pair1_tgt_data, i, pair1_src_data, j = trn_pair1
@@ -112,7 +112,7 @@ class MAML(Module):
             pair2_src_data2 = pair2_src_data2.cuda()
             pair2_feat_src = self._outer_forward(pair2_src_data2, params, episode)
             loss += self._diff_loss(pair1_feat_src, pair2_feat_src)
-            
+            print("inner_loss:", loss.item())
             # backward pass
             grads = autograd.grad(
                 loss,
@@ -244,7 +244,7 @@ class MAML(Module):
                   any(s in name for s in inner_args['frozen'] + ['temp']):
                     params.pop(name)
             # inner-loop training
-            pair3_tgt_data1, m, pair3_tgt_data2, n = tst_pair3
+            
             if not meta_train:
                 for m in self.modules():
                     if isinstance(m, BatchNorm2d) and not m.is_episodic():
@@ -254,10 +254,14 @@ class MAML(Module):
             # inner-loop validation
             with torch.set_grad_enabled(meta_train):
                 self.eval()
+                pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2 = tst_pair3
                 pair3_tgt_data1, pair3_tgt_data2 = pair3_tgt_data1.cuda(), pair3_tgt_data2.cuda()
-                feat1 = self._outer_forward(pair3_tgt_data1, updated_params, 0)
-                feat2 = self._outer_forward(pair3_tgt_data2, updated_params, 0)
+                pair3_tgt_label1, pair3_tgt_label2 = pair3_tgt_label1.cuda(), pair3_tgt_label2.cuda()
+                logits1, feat1 = self._inner_forward(pair3_tgt_data1, updated_params, 0)
+                logits2, feat2 = self._inner_forward(pair3_tgt_data2, updated_params, 0)
                 loss = self._diff_loss(feat1, feat2)
+                loss += F.cross_entropy(logits1, pair3_tgt_label1)
+                loss += F.cross_entropy(logits2, pair3_tgt_label2)
 
             self.train(meta_train)
         

@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 from torchvision import datasets, transforms
 import torch
 import os
@@ -21,7 +22,10 @@ def load_testing(root_path, dir, batch_size, kwargs):
     test_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, **kwargs)
     return test_loader
 
-def load_training_index(root_path, dir, batch_size, indices, kwargs):
+def load_training_index(root_path, dir, batch_size, indices, kwargs, target=False, pseudo=None):
+    """
+    target: 用于判断是否要生成带伪标签的数据集，是则不用sampler
+    """
     transform = transforms.Compose(
         [transforms.Resize([256, 256]),
          transforms.RandomCrop(224),
@@ -29,10 +33,13 @@ def load_training_index(root_path, dir, batch_size, indices, kwargs):
          transforms.ToTensor()])
     sampler = SubsetSampler(indices)  
     data = datasets.ImageFolder(root=os.path.join(root_path, dir), transform=transform)
-    train_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, sampler=sampler, drop_last=True, **kwargs)
+    if target:
+        data = CustomDataset(data, indices, pseudo)
+        train_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, drop_last=True, **kwargs)
+    else:
+        train_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, sampler=sampler, drop_last=True, **kwargs)
     return train_loader
     
-
 class SubsetSampler(Sampler):
     r"""Samples elements randomly from a given list of indices, without replacement.
     Arguments:
@@ -43,8 +50,19 @@ class SubsetSampler(Sampler):
         self.indices = indices
  
     def __iter__(self):
-        for i in range(len(self.indices)):
-            yield self.indices[i]
+        return iter(self.indices)
  
     def __len__(self):
+        return len(self.indices)
+    
+class CustomDataset(torch.utils.data.Dataset):
+    def __init__(self, data, indices, pseudo):
+        self.data = data
+        self.indices = indices
+        self.pseudo = pseudo
+    def __getitem__(self, index):
+        
+        return self.data[self.indices[index]][0], self.pseudo[index]
+    def __len__(self):
+        # You should change 0 to the total size of your dataset.
         return len(self.indices)

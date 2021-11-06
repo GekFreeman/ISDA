@@ -171,15 +171,15 @@ def train(config):
             pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size, tgt_idx, kwargs)
             pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size, src_indices, kwargs)
 
-            src_qry_idx1, src_qry_idx2 = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
+            src_qry_idx1, _, src_qry_idx2, _ = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
             pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size, src_qry_idx2, kwargs)
 
             cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size, kwargs)
 
             # meta-testing dataloader
-            tgt_qry_idx1, tgt_qry_idx2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
-            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx1, kwargs)
-            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx2, kwargs)    
+            tgt_qry_idx1, tgt_qry_label1, tgt_qry_idx2, tgt_qry_label2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
+            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
+            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
 
 
             pair1_iter_a = iter(pair1_target1_loader)
@@ -217,6 +217,7 @@ def train(config):
                                tst_pair3,
                                inner_args,
                                meta_train=True)
+                print("outer_loss: ", loss.item())
                 writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
                 optimizer.zero_grad()
                 loss.backward()
@@ -327,6 +328,7 @@ def index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle):
     d = defaultdict(list)
     for s, l in zip(tgt_qry_idx, tgt_qry_label):
         d[l].append(s)
+    id2label = dict(zip(tgt_qry_idx, tgt_qry_label))
     category_list = list(d.keys())
     tgt_qry_idx_aux = [np.random.choice(d[random_chice_the_other(tgt_qry_label[i],category_list)], size=1) for i in range(len(tgt_qry_idx))]
     if shuffle:
@@ -335,8 +337,10 @@ def index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle):
         tgt_qry_idx, tgt_qry_idx_aux = zip(*idx_pair)
     tgt_qry_idx = np.array(tgt_qry_idx, dtype=np.int64).flatten()
     tgt_qry_idx_aux = np.array(tgt_qry_idx_aux, dtype=np.int64).flatten()
-
-    return tgt_qry_idx, tgt_qry_idx_aux
+    
+    tgt_qry_label = np.array([id2label[x] for x in tgt_qry_idx], dtype=np.int64)
+    tgt_qry_label_aux = np.array([id2label[x] for x in tgt_qry_idx_aux], dtype=np.int64)
+    return tgt_qry_idx, tgt_qry_label, tgt_qry_idx_aux, tgt_qry_label_aux
     
 def random_chice_the_other(x, categorys):
     categorys = set(categorys)
