@@ -112,7 +112,6 @@ class MAML(Module):
             pair2_src_data2 = pair2_src_data2.cuda()
             pair2_feat_src = self._outer_forward(pair2_src_data2, params, episode)
             loss += self._diff_loss(pair1_feat_src, pair2_feat_src)
-            print("inner_loss:", loss.item())
             # backward pass
             grads = autograd.grad(
                 loss,
@@ -273,6 +272,11 @@ class MAML(Module):
         return loss
 
     def _diff_loss(self, data1, data2):
+        cos_sim = torch.cosine_similarity(data1, data2, dim=0, eps=1e-6)
+        diff_loss = torch.mean(cos_sim, dim=0)
+        return diff_loss
+    
+    def _diff_loss2(self, data1, data2):
         data1_norm = torch.norm(data1, p=2, dim=0)
         data2_norm = torch.norm(data2, p=2, dim=0)
         data1 = data1 / data1_norm

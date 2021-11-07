@@ -20,13 +20,13 @@ import yaml
 from tqdm import tqdm
 import torch.nn as nn
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 # Training settings
-pretrain_epochs = 10
-batch_size = 4
+pretrain_epochs = 5
+batch_size = 16
 iteration = 10000
-lr = [0.001, 0.01]
+lr = [0.01, 0.01]
 LEARNING_RATE = 0.001
 momentum = 0.9
 cuda = True
@@ -58,15 +58,20 @@ if cuda:
 kwargs = {'num_workers': 0, 'pin_memory': True} if cuda else {}
 
 
-def pretrain(model, optimizer, source_name):
+def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False, epochs=10, writer=None):
     if dataset == "office31":
-        source_name = source_name + '/images/'
-    source1_loader = data_loader.load_training(root_path, source_name, batch_size, kwargs)
+        new_source_name = source_name + '/images/'
+        new_target_name = target_name + '/images/'
+    source1_loader = data_loader.load_training(root_path, new_source_name, batch_size, kwargs)
+    source1_test_loader = data_loader.load_testing(root_path, new_source_name, batch_size, kwargs)
+    target_test_loader = data_loader.load_testing(root_path, new_target_name, batch_size, kwargs)
     source1_iter = iter(source1_loader)
     iters = 0
     iteration = len(source1_loader)
-    for ep in range(pretrain_epochs):
+    for ep in range(epochs):
         for i, data in enumerate(source1_loader):
+            optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
+            
             source_data, source_label = data
 
             optimizer.zero_grad()
@@ -79,11 +84,19 @@ def pretrain(model, optimizer, source_name):
                    meta_train=False, mark=0)
             loss.backward()
             optimizer.step()
-
-            if (i + iters) % log_interval == 0:
-                print('Train source1 iter: {} [({:.0f}%)]\tLoss: {:.6f}\t'.format(
-                    (i + iters), 100. * (i + iters)/ (iteration * pretrain_epochs), loss.item()))
+            if log:
+                writer.add_scalar(f'pretrain_{source_name}_loss', loss.item(), i+iters)
+                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i+iters)
+        
         iters += len(source1_loader)
+        src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
+        tgt_acc = test_acc(model, target_test_loader, target_name, source_type="Target")
+        if log:
+            writer.add_scalar(f'pretrain_{source_name}_acc', src_acc, ep)
+            writer.add_scalar(f'pretrain_{target_name}_acc', tgt_acc, ep)
+#         if lr_scheduler is not None:
+#             lr_scheduler.step()
+        writer.flush()
         
     return model
 
@@ -129,7 +142,8 @@ def train(config):
     ckpt_path = os.path.join('./save', ckpt_name)
     writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
 
-    model = pretrain(model, optimizer, source1_name)
+    model = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
+    assert 1==0
     ######## Incremental Learning
     for original_source_name in sources:
         if dataset == "office31":
@@ -144,8 +158,9 @@ def train(config):
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
                                     model.parameters(),
                                     **config['optimizer_args'])
-
-        for epoch in range(start_epoch, config['epoch'] + 1):
+        
+        ####meta-learning
+        for epoch in range(start_epoch, config['meta_epochs'] + 1):
             
             ############### Data
             # 更新hnsw
@@ -217,7 +232,7 @@ def train(config):
                                tst_pair3,
                                inner_args,
                                meta_train=True)
-                print("outer_loss: ", loss.item())
+
                 writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
                 optimizer.zero_grad()
                 loss.backward()
@@ -229,8 +244,35 @@ def train(config):
                 
             if lr_scheduler is not None:
                 lr_scheduler.step()
+        
+        ####fine-tune
+        model = pretrain(model, optimizer, original_source_name, writer=writer, epochs=config['fine_tune'])
                 
-                
+def test_acc(model, data_loader, source_name, source_type="source"):
+    """
+    loader_type: 1表示源域，0表示目标域
+    """
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in data_loader:
+            data, target = Variable(data), Variable(target)
+            pred, _ = model(None,
+                   None,
+                   [data, target],
+                   None,
+                   None,
+                   meta_train=False, mark=2)
+
+            pred = torch.nn.functional.softmax(pred, dim=1)
+            pred = pred.data.max(1)[1].cpu()
+            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+        
+        acc = 100. * correct / len(data_loader.dataset)
+#         print(source_dtype, ": ", source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
+#          correct, len(data_loader.dataset), acc))
+    return acc    
             
 
 def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, index=None):

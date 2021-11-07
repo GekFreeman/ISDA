@@ -20,15 +20,11 @@ val:
   n_shot: 1
   n_query: 15
 
-encoder: resnet18
+encoder: resnet50
 encoder_args:
   bn_args:
     track_running_stats: True
-    episodic:
-      - conv1
-      - conv2
-      - conv3
-      - conv4
+
 classifier: logistic
 
 inner_args:
@@ -45,5 +41,11 @@ optimizer_args:
   lr: 0.01
   weight_decay: 5.e-4
   schedule: step
+  milestones:
+    - 100
+    - 300
+    - 450
 
-epoch: 100
+pre_train: 500
+meta_epochs: 0
+fine_tune: 20
