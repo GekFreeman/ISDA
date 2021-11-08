@@ -21,7 +21,7 @@ def make(name, **kwargs):
 
 
 def load(ckpt):
-    model = make(ckpt['addneck'], **ckpt['addneck_args'])
+    model = make(ckpt['add'], **ckpt['add_args'])
     if model is not None:
-        model.load_state_dict(ckpt['addneck_state_dict'])
+        model.load_state_dict(ckpt['add_state_dict'])
     return model

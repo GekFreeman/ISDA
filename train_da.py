@@ -25,10 +25,9 @@ num_gpu=[0,1,3]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-pretrain_epochs = 5
-batch_size = 48
+batch_size = 36
 iteration = 10000
-lr = [0.001, 0.01]
+lr = [0.001, 0.001]
 LEARNING_RATE = 0.001
 momentum = 0.9
 cuda = True
@@ -42,8 +41,9 @@ sources = ["webcam", "dslr"]
 original_target_name = "amazon"
 dataset = "office31"
     
+
 # Target Hard
-hard_threshold = 0.5
+hard_threshold = 0.75
     
 # HNSW
 k = 100
@@ -91,12 +91,12 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
             if log:
                 writer.add_scalar(f'pretrain_{source_name}_loss', loss.item(), i+iters)
                 writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i+iters)
-                for tag, value in model.named_parameters():
-                    tag = tag.replace('.', '/')
-                    writer.add_histogram(tag, value.flatten().data.cpu().numpy(), global_step=i+iters)
-                    if value.grad is not None:
-                        writer.add_histogram(tag+'/grad', value.grad.flatten().data.cpu().numpy(), global_step=i+iters)
-                    writer.flush()
+#                 for tag, value in model.named_parameters():
+#                     tag = tag.replace('.', '/')
+#                     writer.add_histogram(tag, value.flatten().data.cpu().numpy(), global_step=i+iters)
+#                     if value.grad is not None:
+#                         writer.add_histogram(tag+'/grad', value.grad.flatten().data.cpu().numpy(), global_step=i+iters)
+                writer.flush()
         
         iters += len(source1_loader)
         src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
@@ -106,21 +106,68 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
             writer.add_scalar(f'pretrain_{target_name}_acc', tgt_acc, ep)
             writer.flush()
         
-    return model
+    return model, optimizer, lr_scheduler
 
+def save_model(ckpt_path, model, config, optimizer, lr_scheduler, epoch):
+    if config.get('_parallel'):
+        model_ = model.module
+    else:
+        model_ = model
+    
+    training = {
+      'optimizer': config['optimizer'],
+      'optimizer_args': config['optimizer_args'],
+      'optimizer_state_dict': optimizer.state_dict(),
+      'lr_scheduler_state_dict': lr_scheduler.state_dict() 
+        if lr_scheduler is not None else None,
+      'epoch': epoch
+    }
+    
+    ckpt = {
+      'file': __file__,
+      'config': config,
+
+      'encoder': config['encoder'],
+      'encoder_args': config['encoder_args'],
+      'encoder_state_dict': model_.encoder.state_dict(),
+      
+      'add': config['add'],
+      'add_state_dict': model_.add.state_dict(),
+      'add_args': config['add_args'],
+        
+      'classifier': config['classifier'],
+      'classifier_args': config['classifier_args'],
+      'classifier_state_dict': model_.classifier.state_dict(),
+
+      'training': training,
+    }
+    
+    torch.save(ckpt, os.path.join(ckpt_path, 'epoch-last.pth'))
+
+def load_model(config, load_path, inner_args, keep_on=True):
+    """
+    keep_on：是否为继续训练
+    """
+    ckpt = torch.load(load_path)
+    config['encoder'] = ckpt['encoder']
+    config['encoder_args'] = ckpt['encoder_args']
+    config['add'] = ckpt['add']
+    config['add_args'] = ckpt['add_args']
+    config['classifier'] = ckpt['classifier']
+    config['classifier_args'] = ckpt['classifier_args']
+    model = models.load(ckpt,
+                        load_clf=(not inner_args['reset_classifier']))
+    optimizer, lr_scheduler = optimizers.load(ckpt, model.parameters())
+    if keep_on:
+        start_epoch = ckpt['training']['epoch'] + 1
+    else:
+        start_epoch = 0
+    return model, optimizer, lr_scheduler, start_epoch
+    
 def train(config):
     inner_args = utils.config_inner_args(config.get('inner_args'))
     if config.get('load'):
-        ckpt = torch.load(config['load'])
-        config['encoder'] = ckpt['encoder']
-        config['encoder_args'] = ckpt['encoder_args']
-        config['classifier'] = ckpt['classifier']
-        config['classifier_args'] = ckpt['classifier_args']
-        model = models.load(ckpt,
-                            load_clf=(not inner_args['reset_classifier']))
-        optimizer, lr_scheduler = optimizers.load(ckpt, model.parameters())
-        start_epoch = ckpt['training']['epoch'] + 1
-        max_va = ckpt['training']['max_va']
+        model, optimizer, lr_scheduler, start_epoch = load_model(config, config['load'], inner_args, keep_on=True)
     else:
         config['encoder_args'] = config.get('encoder_args') or dict()
         config['add_args'] = config.get('add_args') or dict()
@@ -133,11 +180,10 @@ def train(config):
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
                                             model.parameters(),
                                             **config['optimizer_args'])
+        start_epoch = 1
 
     if cuda:
         model.cuda()
-    
-    start_epoch = 1
     
     if config.get('efficient'):
         model.go_efficient()
@@ -150,9 +196,19 @@ def train(config):
 
     ckpt_path = os.path.join('./save', ckpt_name)
     writer = SummaryWriter(os.path.join(ckpt_path, 'tensorboard'))
+    
+    if config['re_pretrain']:
+        model, optimizer, lr_scheduler = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
+        save_model(ckpt_path, model, config, optimizer, lr_scheduler, epoch=(config['pre_train']-1))
+    else:
+        model, optimizer, lr_scheduler, start_epoch = load_model(config, config['load_pretrain'], inner_args, keep_on=False)
 
-    model = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
-    assert 1==0
+    if config.get('efficient'):
+        model.go_efficient()
+
+    if config.get('_parallel'):
+        model = nn.DataParallel(model)
+        
     ######## Incremental Learning
     for original_source_name in sources:
         if dataset == "office31":
@@ -173,7 +229,7 @@ def train(config):
             
             ############### Data
             # 更新hnsw
-            index = hnswlib.Index(space='l2', dim=dim) # dim 向量维度
+            index = hnswlib.Index(space='l2', dim=config['hnsw']['dim']) # dim 向量维度
             index.init_index(max_elements=num_elements, ef_construction=ef_construction, M=M)
             index.set_ef(int(k * 1.2))
 
@@ -187,23 +243,23 @@ def train(config):
             writer.add_scalar(f'target_{target_name}_acc', acc_tgt, epoch)
             
             model.train()
-            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+            
             np.random.seed(epoch)
             
             # meta-training dataloader
             tgt_idx, src_indices = index_generate_sim(tgt_idx=tgt_spt_idx, src_idx=tgt_spt_src, src_prob=tgt_spt_src_prob)
-            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size, tgt_idx, kwargs)
-            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size, src_indices, kwargs)
+            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_idx, kwargs)
+            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_indices, kwargs)
 
             src_qry_idx1, _, src_qry_idx2, _ = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
-            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size, src_qry_idx2, kwargs)
+            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_qry_idx2, kwargs)
 
-            cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size, kwargs)
+            cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 4, kwargs)
 
             # meta-testing dataloader
             tgt_qry_idx1, tgt_qry_label1, tgt_qry_idx2, tgt_qry_label2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
-            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
-            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
+            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
+            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
 
 
             pair1_iter_a = iter(pair1_target1_loader)
@@ -219,6 +275,8 @@ def train(config):
             ############### Meta-Trainging
             iters = 0
             for data in tqdm(pair1_target1_loader, desc='meta-train', leave=False):
+                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / (len(pair1_target1_loader) * batch_size // 4)), 0.75)
+                
                 pair1_tgt_data, pair1_tgt_label = data
                 
                 
@@ -241,10 +299,11 @@ def train(config):
                                tst_pair3,
                                inner_args,
                                meta_train=True)
-
-                writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
+                loss = torch.mean(loss)
                 optimizer.zero_grad()
                 loss.backward()
+                writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
+                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
                 for param in optimizer.param_groups[0]['params']:
                     nn.utils.clip_grad_value_(param, 10)
                 optimizer.step()
@@ -255,7 +314,7 @@ def train(config):
                 lr_scheduler.step()
         
         ####fine-tune
-        model = pretrain(model, optimizer, original_source_name, writer=writer, epochs=config['fine_tune'])
+    model, optimizer, lr_scheduler = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
                 
 def test_acc(model, data_loader, source_name, source_type="source"):
     """

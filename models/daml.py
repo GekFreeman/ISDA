@@ -140,6 +140,8 @@ class MAML(Module):
                         mom_buffer[name] = grad
                     if 'encoder' in name:
                         lr = inner_args['encoder_lr']
+                    elif 'add' in name:
+                        lr = inner_args['add_lr']
                     elif 'classifier' in name:
                         lr = inner_args['classifier_lr']
                     else:
