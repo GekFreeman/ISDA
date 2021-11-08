@@ -379,7 +379,7 @@ def index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle):
         d[l].append(s)
     id2label = dict(zip(tgt_qry_idx, tgt_qry_label))
     category_list = list(d.keys())
-    tgt_qry_idx_aux = [np.random.choice(d[random_chice_the_other(tgt_qry_label[i],category_list)], size=1) for i in range(len(tgt_qry_idx))]
+    tgt_qry_idx_aux = [np.random.choice(d[random_chice_the_other(tgt_qry_label[i],category_list)], size=1, replace=True) for i in range(len(tgt_qry_idx))]
     if shuffle:
         idx_pair = list(zip(tgt_qry_idx, tgt_qry_idx_aux))
         np.random.shuffle(idx_pair)
