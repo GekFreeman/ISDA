@@ -19,14 +19,16 @@ import models
 import yaml
 from tqdm import tqdm
 import torch.nn as nn
+import tensorflow as tf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+num_gpu=[0,1,3]
+os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
 pretrain_epochs = 5
-batch_size = 16
+batch_size = 48
 iteration = 10000
-lr = [0.01, 0.01]
+lr = [0.001, 0.01]
 LEARNING_RATE = 0.001
 momentum = 0.9
 cuda = True
@@ -57,8 +59,9 @@ if cuda:
 
 kwargs = {'num_workers': 0, 'pin_memory': True} if cuda else {}
 
-
 def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False, epochs=10, writer=None):
+    new_source_name = source_name
+    new_target_name = target_name
     if dataset == "office31":
         new_source_name = source_name + '/images/'
         new_target_name = target_name + '/images/'
@@ -82,11 +85,18 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
                    None,
                    None,
                    meta_train=False, mark=0)
+            loss = loss.mean()
             loss.backward()
             optimizer.step()
             if log:
                 writer.add_scalar(f'pretrain_{source_name}_loss', loss.item(), i+iters)
                 writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i+iters)
+                for tag, value in model.named_parameters():
+                    tag = tag.replace('.', '/')
+                    writer.add_histogram(tag, value.flatten().data.cpu().numpy(), global_step=i+iters)
+                    if value.grad is not None:
+                        writer.add_histogram(tag+'/grad', value.grad.flatten().data.cpu().numpy(), global_step=i+iters)
+                    writer.flush()
         
         iters += len(source1_loader)
         src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
@@ -94,9 +104,7 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
         if log:
             writer.add_scalar(f'pretrain_{source_name}_acc', src_acc, ep)
             writer.add_scalar(f'pretrain_{target_name}_acc', tgt_acc, ep)
-#         if lr_scheduler is not None:
-#             lr_scheduler.step()
-        writer.flush()
+            writer.flush()
         
     return model
 
@@ -115,12 +123,13 @@ def train(config):
         max_va = ckpt['training']['max_va']
     else:
         config['encoder_args'] = config.get('encoder_args') or dict()
+        config['add_args'] = config.get('add_args') or dict()
         config['classifier_args'] = config.get('classifier_args') or dict()
         config['encoder_args']['bn_args']['n_episode'] = config['train'][
             'n_episode']
         config['classifier_args']['n_way'] = config['train']['n_way']
         model = models.make(config['encoder'], config['encoder_args'],
-                            config['classifier'], config['classifier_args'])
+                            config['classifier'], config['classifier_args'], config['add'], config['add_args'])
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
                                             model.parameters(),
                                             **config['optimizer_args'])
@@ -252,7 +261,6 @@ def test_acc(model, data_loader, source_name, source_type="source"):
     """
     loader_type: 1表示源域，0表示目标域
     """
-    model.eval()
     test_loss = 0
     correct = 0
     with torch.no_grad():
@@ -279,7 +287,6 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, 
     """
     loader_type: 1表示源域，0表示目标域
     """
-    model.eval()
     test_loss = 0
     correct = 0
     correct1 = 0

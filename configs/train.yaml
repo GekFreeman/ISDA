@@ -24,6 +24,9 @@ encoder: resnet50
 encoder_args:
   bn_args:
     track_running_stats: True
+add: addneck
+add_args:
+  planes: 256
 
 classifier: logistic
 
@@ -45,7 +48,8 @@ optimizer_args:
     - 100
     - 300
     - 450
-
+    
+_parallel: True
 pre_train: 500
 meta_epochs: 0
 fine_tune: 20

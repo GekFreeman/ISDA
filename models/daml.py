@@ -7,11 +7,12 @@ import torch.utils.checkpoint as cp
 
 from . import encoders
 from . import classifiers
-from .modules import get_child_dict, Module, BatchNorm2d
+from . import blocks
+from .modules import *
 import numpy as np
 import pdb
 
-def make(enc_name, enc_args, clf_name, clf_args):
+def make(enc_name, enc_args, clf_name, clf_args, add_name=None, add_args=None):
     """
   Initializes a random meta model.
   Args:
@@ -23,9 +24,12 @@ def make(enc_name, enc_args, clf_name, clf_args):
     model (MAML): a meta classifier with a random encoder.
   """
     enc = encoders.make(enc_name, **enc_args)
-    clf_args['in_dim'] = enc.get_out_dim()
+    if add_name is not None:
+        add_args['inplanes'] = enc.get_out_dim()
+        add = blocks.make(add_name, **add_args)
+        clf_args['in_dim'] = add.get_out_dim()
     clf = classifiers.make(clf_name, **clf_args)
-    model = MAML(enc, clf)
+    model = MAML(enc, clf, add)
     return model
 
 
@@ -43,6 +47,7 @@ def load(ckpt, load_clf=False, clf_name=None, clf_args=None):
     model (MAML): a meta model with a pre-trained encoder.
   """
     enc = encoders.load(ckpt)
+    add = blocks.load(ckpt)
     if load_clf:
         clf = classifiers.load(ckpt)
     else:
@@ -52,14 +57,15 @@ def load(ckpt, load_clf=False, clf_name=None, clf_args=None):
         else:
             clf_args['in_dim'] = enc.get_out_dim()
             clf = classifiers.make(clf_name, **clf_args)
-    model = MAML(enc, clf)
+    model = MAML(enc, clf, add)
     return model
 
 
 class MAML(Module):
-    def __init__(self, encoder, classifier):
+    def __init__(self, encoder, classifier, add=None):
         super(MAML, self).__init__()
         self.encoder = encoder
+        self.add = add
         self.classifier = classifier
 
     def reset_classifier(self):
@@ -68,11 +74,13 @@ class MAML(Module):
     def _outer_forward(self, x, params, episode):
         """ Forward pass for the inner loop. """
         feat = self.encoder(x, get_child_dict(params, 'encoder'), episode)
+        feat = self.add(feat, get_child_dict(params, 'add'), episode)
         return feat
     
     def _inner_forward(self, x, params, episode):
         """ Forward pass for the inner loop. """
         feat = self.encoder(x, get_child_dict(params, 'encoder'), episode)
+        feat = self.add(feat, get_child_dict(params, 'add'), episode)
         logits = self.classifier(feat, get_child_dict(params, 'classifier'))
         return logits, feat
 
@@ -229,13 +237,15 @@ class MAML(Module):
         assert self.encoder is not None
         assert self.classifier is not None
 
-        self.train()
+        
         if mark == 0:
+            self.train()
             src_trn_data, src_trn_label = trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
             logits, _ = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
             loss = F.cross_entropy(logits, src_trn_label)
         elif mark == 1:
+            self.train()
             # a dictionary of parameters that will be updated in the inner loop
             params = OrderedDict(self.named_parameters())
             for name in list(params.keys()):
@@ -265,6 +275,7 @@ class MAML(Module):
             self.train(meta_train)
         
         if mark == 2:
+            self.eval()
             src_trn_data, src_trn_label = trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
             logits, feat = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)

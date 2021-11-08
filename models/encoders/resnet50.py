@@ -160,7 +160,6 @@ class ResNet50(Module):
         self.layer3 = _make_layer(block, channels[1] * block.expansion, channels[2], layers[2], bn_args_dict[3], stride=2)
         self.layer4 = _make_layer(block, channels[2] * block.expansion, channels[3], layers[3], bn_args_dict[4], stride=2)
 
-        self.pool = nn.AdaptiveAvgPool2d(1)
         self.out_dim = channels[3]
 
         for m in self.modules():
@@ -178,7 +177,7 @@ class ResNet50(Module):
         return self.out_dim * self.scale
 
     def forward(self, x, params=None, episode=None):
-        out = self.conv1(x, get_child_dict(params, 'conv1'), episode)
+        out = self.conv1(x, get_child_dict(params, 'conv1'))
         out = self.bn1(out, get_child_dict(params, 'bn1'), episode)
         out = self.relu(out)
         out = self.maxpool(out)
@@ -195,7 +194,6 @@ class ResNet50(Module):
         for i,layer in enumerate(self.layer4):
             out = layer(out, get_child_dict(params, str(i)), episode)
 
-        out = self.pool(out).flatten(1)
         return out
 
 
