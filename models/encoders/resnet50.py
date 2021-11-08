@@ -1,16 +1,21 @@
 from collections import OrderedDict
 import pdb
 import torch.nn as nn
-
+import torch.utils.model_zoo as model_zoo
 from .encoders import register
 from ..modules import *
 
 __all__ = ['resnet50', 'wide_resnet50']
 
+model_urls = {
+    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+}
 
 def conv3x3(in_channels, out_channels, stride=1):
     return Conv2d(in_channels, out_channels, 3, stride, padding=1, bias=False)
 
+def conv7x7(in_channels, out_channels, stride=1):
+    return Conv2d(in_channels, out_channels, 7, stride, padding=3, bias=False)
 
 def conv1x1(in_channels, out_channels, stride=1):
     return Conv2d(in_channels, out_channels, 1, stride, padding=0, bias=False)
@@ -83,8 +88,8 @@ class BottleNeck(Module):
         out3 = self.bn3(out3, get_child_dict(params, 'bn3'), episode)
         out2 = self.relu(out3)
         if self.downsample is not None:
-            identity = self.downsample.conv1(x, get_child_dict(params, 'downsample.conv1'), episode)
-            identity = self.downsample.bn1(identity, get_child_dict(params, 'downsample.bn1'), episode)
+            for i, layer in enumerate(self.downsample):
+                identity = layer(identity, get_child_dict(params, f'downsample.{i}'), episode)
         
         out1 = self.relu(out2 + identity)
         return out1
@@ -122,24 +127,38 @@ class ResNet50(Module):
         bn_args_ep['episodic'] = True
         bn_args_no_ep['episodic'] = False
         bn_args_dict = dict()
-        for i in [0, 1, 2, 3, 4]:
+        bn_args_dict[0] = 'bn1' in episodic
+        for i in [1, 2, 3, 4]:
             if 'layer%d' % i in episodic:
                 bn_args_dict[i] = bn_args_ep
             else:
                 bn_args_dict[i] = bn_args_no_ep
 
-        self.layer0 = Sequential(
-            OrderedDict([
-                ('conv', conv3x3(3, 64)),
-                ('bn', BatchNorm2d(64, **bn_args_dict[0])),
-            ]))
+        self.conv1 = conv7x7(3, 64, stride=2)
+        self.bn1 = BatchNorm2d(64, bn_args_dict[0])
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
-        self.layer1 = MLBlock(block, 64, channels[0], layers[0], bn_args_dict[1])
-        self.layer2 = MLBlock(block, channels[0] * block.expansion, channels[1], layers[1], bn_args_dict[2], stride=2)
-        self.layer3 = MLBlock(block, channels[1] * block.expansion, channels[2], layers[2], bn_args_dict[3], stride=2)
-        self.layer4 = MLBlock(block, channels[2] * block.expansion, channels[3], layers[3], bn_args_dict[4], stride=2)
+        
+        
+        def _make_layer(block, inplanes, planes, blocks, bn_args, stride=1):
+            downsample = None
+            if stride != 1 or inplanes != planes * block.expansion:
+                downsample = nn.Sequential(OrderedDict([
+                    ('0', conv1x1(inplanes, planes * block.expansion, stride)),
+                    ('1', BatchNorm2d(planes * block.expansion))
+                ]))
+            block_dict = OrderedDict()
+            block_dict['0'] = block(inplanes, planes, bn_args, stride, downsample)
+            inplanes = planes * block.expansion
+            for i in range(1, blocks):
+                block_dict[str(i)] = block(inplanes, planes, bn_args)
+            return nn.Sequential(block_dict)
+        
+        self.layer1 = _make_layer(block, 64, channels[0], layers[0], bn_args_dict[1])
+        self.layer2 = _make_layer(block, channels[0] * block.expansion, channels[1], layers[1], bn_args_dict[2], stride=2)
+        self.layer3 = _make_layer(block, channels[1] * block.expansion, channels[2], layers[2], bn_args_dict[3], stride=2)
+        self.layer4 = _make_layer(block, channels[2] * block.expansion, channels[3], layers[3], bn_args_dict[4], stride=2)
 
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.out_dim = channels[3]
@@ -152,25 +171,41 @@ class ResNet50(Module):
             elif isinstance(m, BatchNorm2d):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
+        
+        self.fc = Linear(512 * block.expansion, 1000)
                 
     def get_out_dim(self, scale=1):
         return self.out_dim * self.scale
 
     def forward(self, x, params=None, episode=None):
-        out = self.layer0(x, get_child_dict(params, 'layer0'), episode)
+        out = self.conv1(x, get_child_dict(params, 'conv1'), episode)
+        out = self.bn1(out, get_child_dict(params, 'bn1'), episode)
         out = self.relu(out)
         out = self.maxpool(out)
-        out = self.layer1(out, get_child_dict(params, 'layer1'), episode)
-        out = self.layer2(out, get_child_dict(params, 'layer2'), episode)
-        out = self.layer3(out, get_child_dict(params, 'layer3'), episode)
-        out = self.layer4(out, get_child_dict(params, 'layer4'), episode)
+        
+        for i,layer in enumerate(self.layer1):
+            out = layer(out, get_child_dict(params, str(i)), episode)
+            
+        for i,layer in enumerate(self.layer2):
+            out = layer(out, get_child_dict(params, str(i)), episode)
+        
+        for i,layer in enumerate(self.layer3):
+            out = layer(out, get_child_dict(params, str(i)), episode)
+        
+        for i,layer in enumerate(self.layer4):
+            out = layer(out, get_child_dict(params, str(i)), episode)
+
         out = self.pool(out).flatten(1)
         return out
 
 
 @register('resnet50')
-def resnet50(bn_args=dict()):
-    return ResNet50(BottleNeck, [3, 4, 6, 3], [64, 128, 256, 512], bn_args)
+def resnet50(bn_args=dict(), pretrained=True):
+    model = ResNet50(BottleNeck, [3, 4, 6, 3], [64, 128, 256, 512], bn_args)
+    if pretrained:
+        pretrain = model_zoo.load_url(model_urls['resnet50'], model_dir="/root/workspace/ISDA/MUDA/MFSAN/MFSAN_2src/save")
+        model.load_state_dict(pretrain)
+    return model
 
 
 @register('wide-resnet50')

@@ -15,7 +15,7 @@ val:
   normalization: True
   transform: flip
   n_batch: 200
-  n_episode: 4
+  n_episode: 50
   n_way: 5
   n_shot: 1
   n_query: 15

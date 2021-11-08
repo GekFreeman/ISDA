@@ -20,7 +20,7 @@ import yaml
 from tqdm import tqdm
 import torch.nn as nn
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Training settings
 pretrain_epochs = 5
