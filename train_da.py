@@ -21,11 +21,11 @@ from tqdm import tqdm
 import torch.nn as nn
 import tensorflow as tf
 
-num_gpu=[0,1,3]
+num_gpu=[1,]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-batch_size = 36
+batch_size = 16
 iteration = 10000
 lr = [0.001, 0.001]
 LEARNING_RATE = 0.001
@@ -274,11 +274,10 @@ def train(config):
             
             ############### Meta-Trainging
             iters = 0
-            for data in tqdm(pair1_target1_loader, desc='meta-train', leave=False):
-                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / (len(pair1_target1_loader) * batch_size // 4)), 0.75)
+            for data in tqdm(cls_source1_loader, desc='meta-train', leave=False):
+                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / ((len(pair1_target1_loader) * batch_size * config['meta_epochs']) // 4)), 0.75)
                 
-                pair1_tgt_data, pair1_tgt_label = data
-                
+                pair1_tgt_data, pair1_tgt_label,  pair1_iter_a = save_iter(pair1_iter_a, pair1_target1_loader)
                 
                 pair1_src_data, pair1_src_label,  pair1_iter_b = save_iter(pair1_iter_b, pair1_source1_loader)
                 trn_pair1 = [pair1_tgt_data, pair1_tgt_label, pair1_src_data, pair1_src_label]
@@ -286,7 +285,7 @@ def train(config):
                 pair2_src_data2, pair2_src_label2, pair2_iter_b = save_iter(pair2_iter_b, pair2_source1_loader2)
                 trn_pair2 = [pair2_src_data2, pair2_src_label2]
                 
-                src_trn_data, src_trn_label, trn_cls = save_iter(trn_cls, cls_source1_loader)
+                src_trn_data, src_trn_label = data
                 trn_group = [src_trn_data, src_trn_label]
                 
                 pair3_tgt_data1, pair3_tgt_label1, pair3_iter_a = save_iter(pair3_iter_a, pair_3_target_loader1)
