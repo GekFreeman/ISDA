@@ -108,8 +108,8 @@ class MAML(Module):
             pair3_tgt_label1, pair3_tgt_label2 = pair3_tgt_label1.cuda(), pair3_tgt_label2.cuda()
             logits1, feat1 = self._inner_forward(pair3_tgt_data1, params, episode)
             logits2, feat2 = self._inner_forward(pair3_tgt_data2, params, episode)
-            loss = self._diff_loss(feat1, feat2)
-            loss += F.cross_entropy(logits1, pair3_tgt_label1)
+#             loss = self._diff_loss(feat1, feat2)
+            loss = F.cross_entropy(logits1, pair3_tgt_label1)
             loss += F.cross_entropy(logits2, pair3_tgt_label2)
             # backward pass
             grads = autograd.grad(
@@ -265,21 +265,25 @@ class MAML(Module):
                 pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
                 pair1_feat_tgt = self._outer_forward(pair1_tgt_data, updated_params, 0)
                 pair1_feat_src = self._outer_forward(pair1_src_data, updated_params, 0)
+                loss += self._mmd(pair1_feat_src, pair1_feat_tgt)
+                
+#                 feat_diff = pair1_feat_tgt - pair1_feat_src
+#                 loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
 
-                feat_diff = pair1_feat_tgt - pair1_feat_src
-                loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
+#                 pair2_src_data2, q = trn_pair2
+#                 pair2_src_data2 = pair2_src_data2.cuda()
+#                 pair2_feat_src = self._outer_forward(pair2_src_data2, updated_params, 0)
+#                 loss += self._diff_loss(pair1_feat_src, pair2_feat_src)                
+                
+                
+                
 
-                pair2_src_data2, q = trn_pair2
-                pair2_src_data2 = pair2_src_data2.cuda()
-                pair2_feat_src = self._outer_forward(pair2_src_data2, updated_params, 0)
-                loss += self._diff_loss(pair1_feat_src, pair2_feat_src)
 
             self.train(meta_train)
         
         if mark == 2:
             self.eval()
             src_trn_data, src_trn_label = trn_group
-            src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
             logits, feat = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
             return logits, feat
         return loss
@@ -298,3 +302,29 @@ class MAML(Module):
         channel_sim_diag = torch.eye(channel_sim.size(0)).cuda()
         channel_sim_diag = channel_sim_diag * channel_sim
         return torch.mean(torch.abs(torch.sum(channel_sim_diag, dim=1)))
+    
+    def _guassian_kernel(self, source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+        n_samples = int(source.size()[0])+int(target.size()[0])
+        total = torch.cat([source, target], dim=0)
+        total0 = total.unsqueeze(0).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+        total1 = total.unsqueeze(1).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+        L2_distance = ((total0-total1)**2).sum(2)
+        if fix_sigma:
+            bandwidth = fix_sigma
+        else:
+            bandwidth = torch.sum(L2_distance.data) / (n_samples**2-n_samples)
+        bandwidth /= kernel_mul ** (kernel_num // 2)
+        bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
+        kernel_val = [torch.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
+        return sum(kernel_val)#/len(kernel_val)
+
+    def _mmd(self, source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+        batch_size = int(source.size()[0])
+        kernels = self._guassian_kernel(source, target,
+                                  kernel_mul=kernel_mul, kernel_num=kernel_num, fix_sigma=fix_sigma)
+        XX = kernels[:batch_size, :batch_size]
+        YY = kernels[batch_size:, batch_size:]
+        XY = kernels[:batch_size, batch_size:]
+        YX = kernels[batch_size:, :batch_size]
+        loss = torch.mean(XX + YY - XY -YX)
+        return loss

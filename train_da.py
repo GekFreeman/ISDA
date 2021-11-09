@@ -21,11 +21,11 @@ from tqdm import tqdm
 import torch.nn as nn
 import tensorflow as tf
 
-num_gpu=[1,]
+num_gpu=[0,1,3]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-batch_size = 16
+batch_size = 48
 iteration = 10000
 lr = [0.001, 0.001]
 LEARNING_RATE = 0.001
@@ -43,7 +43,7 @@ dataset = "office31"
     
 
 # Target Hard
-hard_threshold = 0.75
+hard_threshold = 0.8
     
 # HNSW
 k = 100
@@ -223,24 +223,22 @@ def train(config):
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
                                     model.parameters(),
                                     **config['optimizer_args'])
+
+        
+        ############### Data
+        # 更新hnsw
+        index = hnswlib.Index(space='l2', dim=config['hnsw']['dim']) # dim 向量维度
+        index.init_index(max_elements=num_elements, ef_construction=ef_construction, M=M)
+        index.set_ef(int(k * 1.2))
+
+        start = time.time()
+        source_nums, src_qry_label, acc_src = test_hnsw(model, source1_test_loader, original_source_name, loader_type=1, index=index)
+        tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label, acc_tgt = test_hnsw(model, target_test_loader, original_target_name, loader_type=0, idx_init=source_nums, k=10, index=index)
+        end = time.time()
+        print("HNSW:", end - start)
         
         ####meta-learning
         for epoch in range(start_epoch, config['meta_epochs'] + 1):
-            
-            ############### Data
-            # 更新hnsw
-            index = hnswlib.Index(space='l2', dim=config['hnsw']['dim']) # dim 向量维度
-            index.init_index(max_elements=num_elements, ef_construction=ef_construction, M=M)
-            index.set_ef(int(k * 1.2))
-
-            start = time.time()
-            source_nums, src_qry_label, acc_src = test_hnsw(model, source1_test_loader, original_source_name, loader_type=1, index=index)
-            tgt_spt_idx, tgt_qry_idx, tgt_spt_src, tgt_spt_src_prob, tgt_qry_label, acc_tgt = test_hnsw(model, target_test_loader, original_target_name, loader_type=0, idx_init=source_nums, k=10, index=index)
-            end = time.time()
-            print("HNSW:", end - start)
-            
-            writer.add_scalar(f'source_{source_name}_acc', acc_src, epoch)
-            writer.add_scalar(f'target_{target_name}_acc', acc_tgt, epoch)
             
             model.train()
             
@@ -302,15 +300,20 @@ def train(config):
                 optimizer.zero_grad()
                 loss.backward()
                 writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
-                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
-                for param in optimizer.param_groups[0]['params']:
-                    nn.utils.clip_grad_value_(param, 10)
+                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], iters)
+#                 for param in optimizer.param_groups[0]['params']:
+#                     nn.utils.clip_grad_value_(param, 10)
                 optimizer.step()
                 writer.flush()
                 iters += len(data)
-                
-            if lr_scheduler is not None:
-                lr_scheduler.step()
+        
+            src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
+            tgt_acc = test_acc(model, target_test_loader, target_name, source_type="Target")
+            writer.add_scalar(f'source_{source_name}_acc', acc_src, epoch)
+            writer.add_scalar(f'target_{target_name}_acc', acc_tgt, epoch)
+            writer.flush()
+#             if lr_scheduler is not None:
+#                 lr_scheduler.step()
         
         ####fine-tune
     model, optimizer, lr_scheduler = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
@@ -324,6 +327,7 @@ def test_acc(model, data_loader, source_name, source_type="source"):
     with torch.no_grad():
         for data, target in data_loader:
             data, target = Variable(data), Variable(target)
+            data, target = data.cuda(num_gpu[0]), target.cuda(num_gpu[0])
             pred, _ = model(None,
                    None,
                    [data, target],
@@ -333,7 +337,7 @@ def test_acc(model, data_loader, source_name, source_type="source"):
 
             pred = torch.nn.functional.softmax(pred, dim=1)
             pred = pred.data.max(1)[1].cpu()
-            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+            correct += pred.eq(target.cpu().data.view_as(pred)).cpu().sum()
         
         acc = 100. * correct / len(data_loader.dataset)
 #         print(source_dtype, ": ", source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
@@ -360,6 +364,7 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, 
     with torch.no_grad():
         for data, target in data_loader:
             data, target = Variable(data), Variable(target)
+            data, target = data.cuda(num_gpu[0]), target.cuda(num_gpu[0])
             pred, feat = model(None,
                    None,
                    [data, target],
@@ -393,10 +398,10 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, 
 #                     index.mark_deleted(sample_label)
             else:
                 index.add_items(feat, [x + idx for x in range(len(data))])
-                src_qry_label = np.concatenate([src_qry_label, target], axis=0)
+                src_qry_label = np.concatenate([src_qry_label, target.cpu().numpy()], axis=0)
             
             pred = pred.data.max(1)[1].cpu()
-            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+            correct += pred.eq(target.cpu().data.view_as(pred)).cpu().sum()
 
             idx += len(data)
             domain_idx += len(data)

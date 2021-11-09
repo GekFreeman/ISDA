@@ -1,1 +1,1 @@
-tensorboard --logdir /root/workspace/ISDA/MUDA/MFSAN/MFSAN_2src/save/resnet50_mini-imagenet/tensorboard
+tensorboard --logdir /root/workspace/zhangc/ISDA/save/resnet50_mini-imagenet/tensorboard

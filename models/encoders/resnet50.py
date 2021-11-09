@@ -201,7 +201,7 @@ class ResNet50(Module):
 def resnet50(bn_args=dict(), pretrained=True):
     model = ResNet50(BottleNeck, [3, 4, 6, 3], [64, 128, 256, 512], bn_args)
     if pretrained:
-        pretrain = model_zoo.load_url(model_urls['resnet50'], model_dir="/root/workspace/ISDA/MUDA/MFSAN/MFSAN_2src/save")
+        pretrain = model_zoo.load_url(model_urls['resnet50'], model_dir="/root/workspace/zhangc/ISDA/save")
         model.load_state_dict(pretrain)
     return model
 
