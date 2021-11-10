@@ -21,13 +21,13 @@ from tqdm import tqdm
 import torch.nn as nn
 import tensorflow as tf
 
-num_gpu=[0,1,3]
+num_gpu=[0,1]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-batch_size = 48
+batch_size = 64
 iteration = 10000
-lr = [0.001, 0.001]
+lr = [0.001, 0.01]
 LEARNING_RATE = 0.001
 momentum = 0.9
 cuda = True
@@ -66,22 +66,29 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
         new_source_name = source_name + '/images/'
         new_target_name = target_name + '/images/'
     source1_loader = data_loader.load_training(root_path, new_source_name, batch_size, kwargs)
+    target_loader = data_loader.load_training(root_path, new_target_name, batch_size, kwargs)
+    target_iter = iter(target_loader)
+    
+    
     source1_test_loader = data_loader.load_testing(root_path, new_source_name, batch_size, kwargs)
     target_test_loader = data_loader.load_testing(root_path, new_target_name, batch_size, kwargs)
-    source1_iter = iter(source1_loader)
     iters = 0
     iteration = len(source1_loader)
     for ep in range(epochs):
         for i, data in enumerate(source1_loader):
+            base_lr = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
-            
+            optimizer.param_groups[1]['lr'] = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
+            optimizer.param_groups[2]['lr'] = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             source_data, source_label = data
-
+            
+            target_data, target_label, target_iter = save_iter(target_iter, target_loader)
+            
             optimizer.zero_grad()
 
             loss = model(None,
                    None,
-                   [source_data, source_label],
+                   [source_data, source_label, target_data, target_label],
                    None,
                    None,
                    meta_train=False, mark=0)
@@ -89,8 +96,8 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
             loss.backward()
             optimizer.step()
             if log:
-                writer.add_scalar(f'pretrain_{source_name}_loss', loss.item(), i+iters)
-                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i+iters)
+                writer.add_scalar(f"Pretrain/{source_name}_loss", loss.item(), i+iters)
+                writer.add_scalar('Pretrain/lr', optimizer.param_groups[0]['lr'], i+iters)
 #                 for tag, value in model.named_parameters():
 #                     tag = tag.replace('.', '/')
 #                     writer.add_histogram(tag, value.flatten().data.cpu().numpy(), global_step=i+iters)
@@ -98,12 +105,12 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
 #                         writer.add_histogram(tag+'/grad', value.grad.flatten().data.cpu().numpy(), global_step=i+iters)
                 writer.flush()
         
-        iters += len(source1_loader)
+        iters += iteration
         src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
         tgt_acc = test_acc(model, target_test_loader, target_name, source_type="Target")
         if log:
-            writer.add_scalar(f'pretrain_{source_name}_acc', src_acc, ep)
-            writer.add_scalar(f'pretrain_{target_name}_acc', tgt_acc, ep)
+            writer.add_scalar(f"Pretrain/{source_name}_acc", src_acc, ep)
+            writer.add_scalar(f"Pretrain/{target_name}_acc", tgt_acc, ep)
             writer.flush()
         
     return model, optimizer, lr_scheduler
@@ -178,7 +185,9 @@ def train(config):
         model = models.make(config['encoder'], config['encoder_args'],
                             config['classifier'], config['classifier_args'], config['add'], config['add_args'])
         optimizer, lr_scheduler = optimizers.make(config['optimizer'],
-                                            model.parameters(),
+                                            [{'params': model.encoder.parameters()},
+                                             {'params': model.add.parameters()},
+                                             {'params': model.classifier.parameters()}],
                                             **config['optimizer_args'])
         start_epoch = 1
 
@@ -237,7 +246,11 @@ def train(config):
         end = time.time()
         print("HNSW:", end - start)
         
+        cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 1, kwargs)
+        cls_target_loader = data_loader.load_training(root_path, target_name, batch_size // 1, kwargs)
+        
         ####meta-learning
+        iters = 0
         for epoch in range(start_epoch, config['meta_epochs'] + 1):
             
             model.train()
@@ -246,18 +259,16 @@ def train(config):
             
             # meta-training dataloader
             tgt_idx, src_indices = index_generate_sim(tgt_idx=tgt_spt_idx, src_idx=tgt_spt_src, src_prob=tgt_spt_src_prob)
-            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_idx, kwargs)
-            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_indices, kwargs)
+            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 3, tgt_idx, kwargs)
+            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 3, src_indices, kwargs)
 
             src_qry_idx1, _, src_qry_idx2, _ = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
-            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_qry_idx2, kwargs)
-
-            cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 4, kwargs)
+            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 3, src_qry_idx2, kwargs)
 
             # meta-testing dataloader
             tgt_qry_idx1, tgt_qry_label1, tgt_qry_idx2, tgt_qry_label2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
-            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
-            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
+            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 2, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
+            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 2, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
 
 
             pair1_iter_a = iter(pair1_target1_loader)
@@ -266,14 +277,15 @@ def train(config):
             pair2_iter_b = iter(pair2_source1_loader2)
 
             trn_cls = iter(cls_source1_loader)
+            trn_cls_tgt = iter(cls_target_loader)
 
             pair3_iter_a = iter(pair_3_target_loader1)
             pair3_iter_b = iter(pair_3_target_loader2) 
             
             ############### Meta-Trainging
-            iters = 0
+            it = 0
             for data in tqdm(cls_source1_loader, desc='meta-train', leave=False):
-                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / ((len(pair1_target1_loader) * batch_size * config['meta_epochs']) // 4)), 0.75)
+                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / ((len(cls_source1_loader) * batch_size * config['meta_epochs']) // 1)), 0.75)
                 
                 pair1_tgt_data, pair1_tgt_label,  pair1_iter_a = save_iter(pair1_iter_a, pair1_target1_loader)
                 
@@ -283,34 +295,44 @@ def train(config):
                 pair2_src_data2, pair2_src_label2, pair2_iter_b = save_iter(pair2_iter_b, pair2_source1_loader2)
                 trn_pair2 = [pair2_src_data2, pair2_src_label2]
                 
+                
+                tgt_trn_data, tgt_trn_label, trn_cls_tgt = save_iter(trn_cls_tgt, cls_target_loader)
                 src_trn_data, src_trn_label = data
-                trn_group = [src_trn_data, src_trn_label]
+                trn_group = [src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label]
                 
                 pair3_tgt_data1, pair3_tgt_label1, pair3_iter_a = save_iter(pair3_iter_a, pair_3_target_loader1)
                 pair3_tgt_data2, pair3_tgt_label2, pair3_iter_b = save_iter(pair3_iter_b, pair_3_target_loader2)
                 tst_pair3 = [pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2]
                 
-                loss = model(trn_pair1,
+                cls_loss, mmd_loss = model(trn_pair1,
                                trn_pair2,
                                trn_group,
                                tst_pair3,
                                inner_args,
                                meta_train=True)
+                cls_loss = torch.mean(cls_loss)
+                mmd_loss = torch.mean(mmd_loss)
+                gamma = 2 / (1 + math.exp(-10 * iters / ((len(cls_source1_loader) * batch_size * config['meta_epochs']) // 1))) - 1
+                loss = cls_loss + gamma * mmd_loss
                 loss = torch.mean(loss)
                 optimizer.zero_grad()
                 loss.backward()
-                writer.add_scalars('loss', {'meta-train': loss.item()}, iters)
-                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], iters)
+                writer.add_scalar("loss/cls_loss", cls_loss.item(), iters)
+                writer.add_scalar("loss/mmd_loss", mmd_loss.item(), iters)
+                writer.add_scalar("loss/total_loss", loss.item(), iters)
+                writer.add_scalar('parameters/lr', optimizer.param_groups[0]['lr'], iters)
+                writer.add_scalar('parameters/gamma', gamma, iters)
 #                 for param in optimizer.param_groups[0]['params']:
 #                     nn.utils.clip_grad_value_(param, 10)
                 optimizer.step()
                 writer.flush()
                 iters += len(data)
+                it += len(data)
         
             src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
             tgt_acc = test_acc(model, target_test_loader, target_name, source_type="Target")
-            writer.add_scalar(f'source_{source_name}_acc', acc_src, epoch)
-            writer.add_scalar(f'target_{target_name}_acc', acc_tgt, epoch)
+            writer.add_scalar(f"Acc/source_{original_source_name}", src_acc, epoch)
+            writer.add_scalar(f"Acc/target_{original_target_name}_{source_name}", tgt_acc, epoch)
             writer.flush()
 #             if lr_scheduler is not None:
 #                 lr_scheduler.step()
@@ -318,7 +340,7 @@ def train(config):
         ####fine-tune
     model, optimizer, lr_scheduler = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
                 
-def test_acc(model, data_loader, source_name, source_type="source"):
+def test_acc(model, data_loader, source_name, source_type="source", sampler=False):
     """
     loader_type: 1表示源域，0表示目标域
     """
@@ -338,8 +360,10 @@ def test_acc(model, data_loader, source_name, source_type="source"):
             pred = torch.nn.functional.softmax(pred, dim=1)
             pred = pred.data.max(1)[1].cpu()
             correct += pred.eq(target.cpu().data.view_as(pred)).cpu().sum()
-        
-        acc = 100. * correct / len(data_loader.dataset)
+        if sampler:
+            acc = 100. * correct / len(data_loader.sampler)
+        else:
+            acc = 100. * correct / len(data_loader.dataset)
 #         print(source_dtype, ": ", source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
 #          correct, len(data_loader.dataset), acc))
     return acc    

@@ -86,12 +86,12 @@ class BottleNeck(Module):
         out3 = self.relu(out4)
         out3 = self.conv3(out3, get_child_dict(params, 'conv3'))
         out3 = self.bn3(out3, get_child_dict(params, 'bn3'), episode)
-        out2 = self.relu(out3)
+#         out2 = self.relu(out3)
         if self.downsample is not None:
             for i, layer in enumerate(self.downsample):
                 identity = layer(identity, get_child_dict(params, f'downsample.{i}'), episode)
         
-        out1 = self.relu(out2 + identity)
+        out1 = self.relu(out3 + identity)
         return out1
 
 class MLBlock(Module):
@@ -127,7 +127,7 @@ class ResNet50(Module):
         bn_args_ep['episodic'] = True
         bn_args_no_ep['episodic'] = False
         bn_args_dict = dict()
-        bn_args_dict[0] = 'bn1' in episodic
+        bn_args_dict[0] = bn_args_no_ep
         for i in [1, 2, 3, 4]:
             if 'layer%d' % i in episodic:
                 bn_args_dict[i] = bn_args_ep
@@ -135,7 +135,7 @@ class ResNet50(Module):
                 bn_args_dict[i] = bn_args_no_ep
 
         self.conv1 = conv7x7(3, 64, stride=2)
-        self.bn1 = BatchNorm2d(64, bn_args_dict[0])
+        self.bn1 = BatchNorm2d(64, **bn_args_dict[0])
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         

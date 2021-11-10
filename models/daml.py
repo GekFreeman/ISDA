@@ -233,10 +233,12 @@ class MAML(Module):
         
         if mark == 0:
             self.train()
-            src_trn_data, src_trn_label = trn_group
+            src_trn_data, src_trn_label, target_data, target_label  = trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
             logits, _ = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
             loss = F.cross_entropy(logits, src_trn_label)
+            logits_tgt, _ = self._inner_forward(target_data, OrderedDict(self.named_parameters()), 0)
+            return loss
         elif mark == 1:
             self.train()
             # a dictionary of parameters that will be updated in the inner loop
@@ -256,16 +258,19 @@ class MAML(Module):
             # inner-loop validation
             with torch.set_grad_enabled(meta_train):
                 self.eval()
-                src_trn_data, src_trn_label = trn_group
-                src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
-                logits, _ = self._inner_forward(src_trn_data, updated_params, 0)
-                loss = F.cross_entropy(logits, src_trn_label)
+                src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label = trn_group
+                src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label = src_trn_data.cuda(), src_trn_label.cuda(), tgt_trn_data.cuda(), tgt_trn_label.cuda()
+                logits, feat_src = self._inner_forward(src_trn_data, None, 0)
+                cls_loss = F.cross_entropy(logits, src_trn_label)
+                
+                feat_tgt = self._outer_forward(tgt_trn_data, None, 0)
 
-                pair1_tgt_data, i, pair1_src_data, j = trn_pair1
-                pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
-                pair1_feat_tgt = self._outer_forward(pair1_tgt_data, updated_params, 0)
-                pair1_feat_src = self._outer_forward(pair1_src_data, updated_params, 0)
-                loss += self._mmd(pair1_feat_src, pair1_feat_tgt)
+#                 pair1_tgt_data, i, pair1_src_data, j = trn_pair1
+#                 pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
+#                 pair1_feat_tgt = self._outer_forward(pair1_tgt_data, updated_params, 0)
+#                 pair1_feat_src = self._outer_forward(pair1_src_data, updated_params, 0)
+                mmd_loss = self._mmd(feat_src, feat_tgt)
+                
                 
 #                 feat_diff = pair1_feat_tgt - pair1_feat_src
 #                 loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
@@ -274,19 +279,14 @@ class MAML(Module):
 #                 pair2_src_data2 = pair2_src_data2.cuda()
 #                 pair2_feat_src = self._outer_forward(pair2_src_data2, updated_params, 0)
 #                 loss += self._diff_loss(pair1_feat_src, pair2_feat_src)                
-                
-                
-                
-
-
             self.train(meta_train)
+            return cls_loss, mmd_loss
         
-        if mark == 2:
+        else:
             self.eval()
             src_trn_data, src_trn_label = trn_group
             logits, feat = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
             return logits, feat
-        return loss
 
     def _diff_loss(self, data1, data2):
         cos_sim = torch.cosine_similarity(data1, data2, dim=0, eps=1e-6)

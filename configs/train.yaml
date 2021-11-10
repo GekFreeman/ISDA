@@ -33,9 +33,9 @@ classifier: logistic
 inner_args:
   reset_classifier: False
   n_step: 1
-  encoder_lr: 0.0001
-  add_lr: 0.0001
-  classifier_lr: 0.0001
+  encoder_lr: 0.0000000001
+  add_lr: 0.0000000001
+  classifier_lr: 0.0000000001
   momentum: 0.9
   weight_decay: 5.e-4
   first_order: False
@@ -50,8 +50,8 @@ optimizer_args:
     - 300
     - 450
     
-load_pretrain: /root/workspace/ISDA/MUDA/MFSAN/MFSAN_2src/save/resnet50_mini-imagenet/epoch-last.pth
-re_pretrain: False
+load_pretrain: /root/workspace/zhangc/ISDA/save/resnet50_mini-imagenet/epoch-last.pth
+re_pretrain: True
 _parallel: True
 pre_train: 50
 meta_epochs: 20

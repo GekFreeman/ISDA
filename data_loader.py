@@ -4,6 +4,8 @@ import torch
 import os
 from torch.utils.data import Sampler
 import pdb
+import numpy as np
+
 def load_training(root_path, dir, batch_size, kwargs):
     transform = transforms.Compose(
         [transforms.Resize([256, 256]),
@@ -19,7 +21,7 @@ def load_testing(root_path, dir, batch_size, kwargs):
         [transforms.Resize([224, 224]),
          transforms.ToTensor()])
     data = datasets.ImageFolder(root=os.path.join(root_path, dir), transform=transform)
-    test_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, **kwargs)
+    test_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, drop_last=True, **kwargs)
     return test_loader
 
 def load_training_index(root_path, dir, batch_size, indices, kwargs, target=False, pseudo=None):
@@ -66,3 +68,32 @@ class CustomDataset(torch.utils.data.Dataset):
     def __len__(self):
         # You should change 0 to the total size of your dataset.
         return len(self.indices)
+    
+    
+def load_training_source_debug(root_path, source_name, batch_size, kwargs):
+    transform = transforms.Compose(
+        [transforms.Resize([256, 256]),
+         transforms.RandomCrop(224),
+         transforms.RandomHorizontalFlip(),
+         transforms.ToTensor()])
+    data = datasets.ImageFolder(root=root_path + source_name, transform=transform);
+    
+    transform2 = transforms.Compose(
+        [transforms.Resize([224, 224]),
+         transforms.ToTensor()])
+    data2 = datasets.ImageFolder(root=os.path.join(root_path, source_name), transform=transform2)
+    
+    total_num = len(data.imgs)
+    total_indices = list(range(total_num))
+    data_cls1=list(np.random.choice(total_indices,size=total_num * 4 // 5,replace=False))
+    data_cls2=[x for x in total_indices if x not in data_cls1]
+    
+    sampler1 = torch.utils.data.sampler.SubsetRandomSampler(data_cls1)                                                                    
+    sampler2 = torch.utils.data.sampler.SubsetRandomSampler(data_cls2)
+    
+    
+    
+    train_loader1 = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, drop_last=True, sampler=sampler1, **kwargs)
+    train_loader2 = torch.utils.data.DataLoader(data2, batch_size=batch_size, shuffle=False, drop_last=True, sampler=sampler2, **kwargs)
+    
+    return train_loader1,train_loader2
