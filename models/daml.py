@@ -55,7 +55,7 @@ def load(ckpt, load_clf=False, clf_name=None, clf_args=None):
             clf = classifiers.make(ckpt['classifier'],
                                    **ckpt['classifier_args'])
         else:
-            clf_args['in_dim'] = enc.get_out_dim()
+            clf_args['in_dim'] = add.get_out_dim()
             clf = classifiers.make(clf_name, **clf_args)
     model = MAML(enc, clf, add)
     return model
@@ -233,12 +233,14 @@ class MAML(Module):
         
         if mark == 0:
             self.train()
-            src_trn_data, src_trn_label, target_data, target_label  = trn_group
+            src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label   = trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
-            logits, _ = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
+            tgt_trn_data, tgt_trn_label = tgt_trn_data.cuda(), tgt_trn_label.cuda()
+            logits, feat_src = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
+            _, feat_tgt = self._inner_forward(tgt_trn_data, OrderedDict(self.named_parameters()), 0)
             loss = F.cross_entropy(logits, src_trn_label)
-            logits_tgt, _ = self._inner_forward(target_data, OrderedDict(self.named_parameters()), 0)
-            return loss
+            mmd_loss = self._mmd(feat_src, feat_tgt)
+            return loss, mmd_loss
         elif mark == 1:
             self.train()
             # a dictionary of parameters that will be updated in the inner loop

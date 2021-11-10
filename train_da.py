@@ -21,11 +21,11 @@ from tqdm import tqdm
 import torch.nn as nn
 import tensorflow as tf
 
-num_gpu=[0,1]
+num_gpu=[0,1,3]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-batch_size = 64
+batch_size = 48
 iteration = 10000
 lr = [0.001, 0.01]
 LEARNING_RATE = 0.001
@@ -67,36 +67,39 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
         new_target_name = target_name + '/images/'
     source1_loader = data_loader.load_training(root_path, new_source_name, batch_size, kwargs)
     target_loader = data_loader.load_training(root_path, new_target_name, batch_size, kwargs)
-    target_iter = iter(target_loader)
-    
     
     source1_test_loader = data_loader.load_testing(root_path, new_source_name, batch_size, kwargs)
     target_test_loader = data_loader.load_testing(root_path, new_target_name, batch_size, kwargs)
     iters = 0
     iteration = len(source1_loader)
+    iter_target_loader = iter(target_loader)
     for ep in range(epochs):
         for i, data in enumerate(source1_loader):
-            base_lr = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             optimizer.param_groups[1]['lr'] = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             optimizer.param_groups[2]['lr'] = lr[1] / math.pow((1 + 10 * (i + iters) / (iteration * epochs)), 0.75)
             source_data, source_label = data
             
-            target_data, target_label, target_iter = save_iter(target_iter, target_loader)
+            target_data, target_label, iter_target_loader = save_iter(iter_target_loader, target_loader)
             
             optimizer.zero_grad()
 
-            loss = model(None,
+            cls_loss, mmd_loss = model(None,
                    None,
                    [source_data, source_label, target_data, target_label],
                    None,
                    None,
                    meta_train=False, mark=0)
-            loss = loss.mean()
+            mmd_loss = mmd_loss.mean()
+            cls_loss = cls_loss.mean()
+            gamma = 2 / (1 + math.exp(-10 * (i + iters) / (iteration * epochs))) - 1 # 0.2
+            loss = gamma * mmd_loss + cls_loss
             loss.backward()
             optimizer.step()
             if log:
                 writer.add_scalar(f"Pretrain/{source_name}_loss", loss.item(), i+iters)
+                writer.add_scalar(f"Pretrain/{source_name}_cls_loss", cls_loss.item(), i+iters)
+                writer.add_scalar(f"Pretrain/{source_name}_mmd_loss", mmd_loss.item(), i+iters)
                 writer.add_scalar('Pretrain/lr', optimizer.param_groups[0]['lr'], i+iters)
 #                 for tag, value in model.named_parameters():
 #                     tag = tag.replace('.', '/')
@@ -164,7 +167,9 @@ def load_model(config, load_path, inner_args, keep_on=True):
     config['classifier_args'] = ckpt['classifier_args']
     model = models.load(ckpt,
                         load_clf=(not inner_args['reset_classifier']))
-    optimizer, lr_scheduler = optimizers.load(ckpt, model.parameters())
+    optimizer, lr_scheduler = optimizers.load(ckpt, [{'params': model.encoder.parameters()},
+                                             {'params': model.add.parameters()},
+                                             {'params': model.classifier.parameters()}])
     if keep_on:
         start_epoch = ckpt['training']['epoch'] + 1
     else:
@@ -191,15 +196,6 @@ def train(config):
                                             **config['optimizer_args'])
         start_epoch = 1
 
-    if cuda:
-        model.cuda()
-    
-    if config.get('efficient'):
-        model.go_efficient()
-
-    if config.get('_parallel'):
-        model = nn.DataParallel(model)
-
     ckpt_name = config['encoder']
     ckpt_name += '_' + config['dataset'].replace('meta-', '')
 
@@ -211,13 +207,16 @@ def train(config):
         save_model(ckpt_path, model, config, optimizer, lr_scheduler, epoch=(config['pre_train']-1))
     else:
         model, optimizer, lr_scheduler, start_epoch = load_model(config, config['load_pretrain'], inner_args, keep_on=False)
-
+        
+    if cuda:
+        model.cuda()
+        
     if config.get('efficient'):
         model.go_efficient()
 
     if config.get('_parallel'):
         model = nn.DataParallel(model)
-        
+
     ######## Incremental Learning
     for original_source_name in sources:
         if dataset == "office31":
@@ -228,11 +227,6 @@ def train(config):
         source1_test_loader = data_loader.load_testing(root_path, source_name, batch_size, kwargs)
         target_test_loader = data_loader.load_testing(root_path, target_name, batch_size, kwargs)
         correct = 0
-        
-        optimizer, lr_scheduler = optimizers.make(config['optimizer'],
-                                    model.parameters(),
-                                    **config['optimizer_args'])
-
         
         ############### Data
         # 更新hnsw
@@ -246,11 +240,13 @@ def train(config):
         end = time.time()
         print("HNSW:", end - start)
         
-        cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 1, kwargs)
-        cls_target_loader = data_loader.load_training(root_path, target_name, batch_size // 1, kwargs)
+        cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 2, kwargs)
+        cls_target_loader = data_loader.load_training(root_path, target_name, batch_size // 2, kwargs)
         
         ####meta-learning
         iters = 0
+        epochs = config['meta_epochs']
+        iteration = len(cls_source1_loader)
         for epoch in range(start_epoch, config['meta_epochs'] + 1):
             
             model.train()
@@ -259,16 +255,16 @@ def train(config):
             
             # meta-training dataloader
             tgt_idx, src_indices = index_generate_sim(tgt_idx=tgt_spt_idx, src_idx=tgt_spt_src, src_prob=tgt_spt_src_prob)
-            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 3, tgt_idx, kwargs)
-            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 3, src_indices, kwargs)
+            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_idx, kwargs)
+            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_indices, kwargs)
 
             src_qry_idx1, _, src_qry_idx2, _ = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
-            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 3, src_qry_idx2, kwargs)
+            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_qry_idx2, kwargs)
 
             # meta-testing dataloader
             tgt_qry_idx1, tgt_qry_label1, tgt_qry_idx2, tgt_qry_label2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
-            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 2, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
-            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 2, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
+            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
+            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
 
 
             pair1_iter_a = iter(pair1_target1_loader)
@@ -285,7 +281,10 @@ def train(config):
             ############### Meta-Trainging
             it = 0
             for data in tqdm(cls_source1_loader, desc='meta-train', leave=False):
-                optimizer.param_groups[0]['lr'] = lr[0] / math.pow((1 + 10 * iters / ((len(cls_source1_loader) * batch_size * config['meta_epochs']) // 1)), 0.75)
+
+                optimizer.param_groups[0]['lr'] = lr[0] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
+                optimizer.param_groups[1]['lr'] = lr[1] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
+                optimizer.param_groups[2]['lr'] = lr[1] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
                 
                 pair1_tgt_data, pair1_tgt_label,  pair1_iter_a = save_iter(pair1_iter_a, pair1_target1_loader)
                 
@@ -312,7 +311,8 @@ def train(config):
                                meta_train=True)
                 cls_loss = torch.mean(cls_loss)
                 mmd_loss = torch.mean(mmd_loss)
-                gamma = 2 / (1 + math.exp(-10 * iters / ((len(cls_source1_loader) * batch_size * config['meta_epochs']) // 1))) - 1
+#                 gamma = 2 / (1 + math.exp(-10 * (it + iters) / (iteration * epochs))) - 1 # 0.2
+                gamma = 0.2
                 loss = cls_loss + gamma * mmd_loss
                 loss = torch.mean(loss)
                 optimizer.zero_grad()
