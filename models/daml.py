@@ -303,8 +303,8 @@ class MAML(Module):
                 pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2 = tst_pair3
                 pair3_tgt_data1, pair3_tgt_data2 = pair3_tgt_data1.cuda(), pair3_tgt_data2.cuda()
                 pair3_tgt_label1, pair3_tgt_label2 = pair3_tgt_label1.cuda(), pair3_tgt_label2.cuda()
-                logits1, feat1 = self._inner_forward(pair3_tgt_data1, None, 0)
-                logits2, feat2 = self._inner_forward(pair3_tgt_data2, None, 0)
+                logits1, feat1 = self._inner_forward(pair3_tgt_data1, updated_params, 0)
+                logits2, feat2 = self._inner_forward(pair3_tgt_data2, updated_params, 0)
 #             loss = self._diff_loss(feat1, feat2)
                 cls_loss+= F.cross_entropy(logits1, pair3_tgt_label1)
                 cls_loss+= F.cross_entropy(logits2, pair3_tgt_label2)
