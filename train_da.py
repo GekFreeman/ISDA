@@ -315,7 +315,7 @@ def train(config):
                 cls_loss = torch.mean(cls_loss)
                 mmd_loss = torch.mean(mmd_loss)
 #                 gamma = 2 / (1 + math.exp(-10 * (it + iters) / (iteration * epochs))) - 1 # 0.2
-                gamma = 1
+                gamma =1
                 loss = cls_loss + gamma * mmd_loss
                 loss = torch.mean(loss)
                 
