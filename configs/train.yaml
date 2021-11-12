@@ -50,12 +50,12 @@ optimizer_args:
     - 300
     - 450
     
-load_pretrain: /root/workspace/zhangc/ISDA/save/resnet50_mini-imagenet/epoch-last.pth
-re_pretrain: True
+load_pretrain: /userhome/chengyl/UDA/multi-source/ISDA/save/resnet50_mini-imagenet/epoch-last.pth
+re_pretrain: False
 _parallel: True
-pre_train: 50
-meta_epochs: 20
-fine_tune: 20
+pre_train: 20
+meta_epochs: 30
+fine_tune: 2
 
 hnsw:
   dim: 256
