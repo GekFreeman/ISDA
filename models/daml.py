@@ -94,8 +94,8 @@ class MAML(Module):
         logits = self.classifier(feat, get_child_dict(params, 'classifier'))
         return logits, feat
 
-    def _inner_iter(self, tst_pair3, params, mom_buffer, episode, inner_args,
-                    detach):
+    def _inner_iter(self, trn_data, params, mom_buffer, episode, inner_args,
+                    detach, trn_flag=0):
         """ 
         Performs one inner-loop iteration of MAML including the forward and 
         backward passes and the parameter update.
@@ -112,15 +112,42 @@ class MAML(Module):
           mom_buffer (dict): the momentum buffer AFTER the update.
         """
         with torch.enable_grad():
-            # forward pass
-            pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2 = tst_pair3
-            pair3_tgt_data1, pair3_tgt_data2 = pair3_tgt_data1.cuda(), pair3_tgt_data2.cuda()
-            pair3_tgt_label1, pair3_tgt_label2 = pair3_tgt_label1.cuda(), pair3_tgt_label2.cuda()
-            logits1, feat1 = self._inner_forward(pair3_tgt_data1, params, episode)
-            logits2, feat2 = self._inner_forward(pair3_tgt_data2, params, episode)
-#             loss = self._diff_loss(feat1, feat2)
-            loss = F.cross_entropy(logits1, pair3_tgt_label1)
-            loss += F.cross_entropy(logits2, pair3_tgt_label2)
+            loss = 0
+            #### forward pass
+            ## 源域的相似简单目标域
+            trn_pair1, trn_pair2 = trn_data
+#             pair1_src_data, pair1_src_label, pair1_tgt_data, pair1_tgt_label = trn_pair1
+#             pair1_src_data, pair1_src_label = pair1_src_data.cuda(), pair1_src_label.cuda()
+#             pair1_tgt_data, pair1_tgt_label = pair1_tgt_data.cuda(), pair1_tgt_label.cuda()
+#             p1_logits1, p1_feat1 = self._inner_forward(pair1_src_data, params, episode)
+#             p1_logits2, p1_feat2 = self._inner_forward(pair1_tgt_data, params, episode)
+#             feat_diff = p1_feat1 - p1_feat2
+#             pull_loss = torch.mean(torch.norm(feat_diff, p=2, dim=1))
+            ## 简单目标域的同域不同类 
+            pair2_tgt_data1, pair2_tgt_label1, pair2_tgt_data2, pair2_tgt_label2 = trn_pair2
+            pair2_tgt_data1, pair2_tgt_label1 = pair2_tgt_data1.cuda(), pair2_tgt_label1.cuda()
+            pair2_tgt_data2, pair2_tgt_label2 = pair2_tgt_data2.cuda(), pair2_tgt_label2.cuda()
+            p2_feat1 = self._outer_forward(pair2_tgt_data1, params, episode)
+            p2_feat2 = self._outer_forward(pair2_tgt_data2, params, episode)
+            push_loss = self._diff_loss(p2_feat1, p2_feat2)
+            push_loss = torch.mean(push_loss,dim=0)
+            loss += push_loss
+#             p2_feat1 = self.avgpool(p2_feat1).view(p2_feat1.size(0), -1)
+#             p2_logits1 = self.classifier(p2_feat1, get_child_dict(params, 'classifier'))
+
+#             p2_feat2 = self.avgpool(p2_feat2).view(p2_feat2.size(0), -1)
+#             p2_logits2 = self.classifier(p2_feat2, get_child_dict(params, 'classifier'))
+            
+#             cls_loss = F.cross_entropy(p2_logits1, pair2_tgt_label1)
+#             cls_loss += F.cross_entropy(p2_logits2, pair2_tgt_label2)
+            
+#             if (trn_flag >> 0) % 2 == 1:
+#                 loss += pull_loss
+#             if (trn_flag >> 1) % 2 == 1:
+#                 loss += cls_loss
+#             if (trn_flag >> 2) % 2 == 1:
+#                 loss += push_loss
+            
             # backward pass
             grads = autograd.grad(
                 loss,
@@ -154,7 +181,7 @@ class MAML(Module):
 
         return updated_params, mom_buffer
 
-    def _adapt(self, tst_pair3, params, inner_args, meta_train, episode):
+    def _adapt(self, trn_data, params, inner_args, meta_train, episode, trn_flag):
         """
     Performs inner-loop adaptation in MAML.
     Args:
@@ -197,9 +224,9 @@ class MAML(Module):
             detach = not torch.is_grad_enabled(
             )  # detach graph in the first pass
             self.is_first_pass(detach)
-            params, mom_buffer = self._inner_iter(tst_pair3, params, mom_buffer,
+            params, mom_buffer = self._inner_iter(trn_data, params, mom_buffer,
                                                   int(episode), inner_args,
-                                                  detach)
+                                                  detach, trn_flag)
             state = tuple(
                 t if t.requires_grad else t.clone().requires_grad_(True)
                 for t in tuple(params.values()) + tuple(mom_buffer.values()))
@@ -215,13 +242,13 @@ class MAML(Module):
                 mom_buffer = OrderedDict(
                     zip(mom_buffer_keys, state[-len(mom_buffer_keys):]))
             else:
-                params, mom_buffer = self._inner_iter(tst_pair3, params, mom_buffer,
+                params, mom_buffer = self._inner_iter(trn_data, params, mom_buffer,
                                                       episode, inner_args,
-                                                      not meta_train)
+                                                      not meta_train, trn_flag)
 
         return params
 
-    def forward(self, trn_pair1, trn_pair2, trn_group, tst_pair3, inner_args, meta_train, mark=1):
+    def forward(self, trn_data, tst_data, inner_args, meta_train, mark=1, trn_flag=0):
         """
         Args:
           x_shot (float tensor, [n_episode, n_way * n_shot, C, H, W]): support sets.
@@ -264,52 +291,40 @@ class MAML(Module):
                 for m in self.modules():
                     if isinstance(m, BatchNorm2d) and not m.is_episodic():
                         m.eval()
-            updated_params = self._adapt(tst_pair3, params,
-                                         inner_args, meta_train, 0)
+            updated_params = self._adapt(trn_data, params,
+                                         inner_args, meta_train, 0, trn_flag=trn_flag)
             # inner-loop validation
             with torch.set_grad_enabled(meta_train):
-                self.eval()
-                src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label = trn_group#bs12
+#                 self.eval()
+
+                tst_pair1, tst_pair2, tst_group = tst_data
+                src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label = tst_group#bs12
                 src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label = src_trn_data.cuda(), src_trn_label.cuda(), tgt_trn_data.cuda(), tgt_trn_label.cuda()
                 logits, feat_src = self._inner_forward(src_trn_data, updated_params, 0)
                 cls_loss = F.cross_entropy(logits, src_trn_label)
-                
+
                 feat_tgt = self._outer_forward(tgt_trn_data, updated_params, 0)
                 feat_tgt=self.avgpool(feat_tgt)
                 feat_tgt=feat_tgt.view(feat_tgt.size(0),-1)
-
-                pair1_tgt_data, i, pair1_src_data, j = trn_pair1#bs12
+                mmd_loss = mmd.mmd(feat_src, feat_tgt)
+                
+                pair1_tgt_data, i, pair1_src_data, j = tst_pair1#bs12
                 pair1_tgt_data, pair1_src_data = pair1_tgt_data.cuda(), pair1_src_data.cuda()
                 pair1_feat_tgt = self._outer_forward(pair1_tgt_data, updated_params, 0)
                 pair1_feat_tgt=self.avgpool(pair1_feat_tgt)
                 pair1_feat_tgt=pair1_feat_tgt.view(pair1_feat_tgt.size(0),-1)
-                pair1_feat_tgt_mmd=pair1_feat_tgt
                 
                 pair1_feat_src = self._outer_forward(pair1_src_data, updated_params, 0)
-                pair1_feat_src_mmd =self.avgpool(pair1_feat_src)
-                pair1_feat_src_mmd=pair1_feat_src_mmd.view(pair1_feat_src_mmd.size(0),-1)
+                pair1_feat_src =self.avgpool(pair1_feat_src)
+                pair1_feat_src=pair1_feat_src.view(pair1_feat_src.size(0),-1)
+                feat_diff = pair1_feat_tgt - pair1_feat_src
+                pull_loss = torch.mean(torch.norm(feat_diff, p=2, dim=1))
                 
-                mmd_loss = mmd.mmd(feat_src, feat_tgt)#+self._mmd(pair1_feat_src_mmd, pair1_feat_tgt_mmd)
-                
-                #pair1_feat_src=pair1_feat_src.view(pair1_feat_src.size(0),-1)
-                
-                
-                
-#                 feat_diff = pair1_feat_tgt - pair1_feat_src
-#                 loss += torch.mean(torch.norm(feat_diff, p=2, dim=1))
-                
-                pair2_src_data2, q = trn_pair2
+                pair2_src_data2, q = tst_pair2
                 pair2_src_data2 = pair2_src_data2.cuda()#bs12
                 pair2_feat_src = self._outer_forward(pair2_src_data2, updated_params, 0)
                 diff_loss=self._diff_loss(pair1_feat_src, pair2_feat_src)  
-                feat_src2=self.avgpool(pair2_feat_src)
-                feat_src2=feat_src2.view(feat_src2.size(0),-1)
-                
-                diff_loss=torch.mean(diff_loss,dim=0)
-                #cls_loss+=diff_loss
-                
-                #cls_loss+= diff_loss 
-               
+                push_loss=torch.mean(diff_loss,dim=0)
                 
                 ####################pse label################
                 """pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2 = tst_pair3
@@ -322,9 +337,8 @@ class MAML(Module):
                 cls_loss+= F.cross_entropy(logits2, pair3_tgt_label2)"""
                 #############################################
                 
-                
             self.train(meta_train)
-            return cls_loss, mmd_loss,diff_loss
+            return cls_loss, mmd_loss, push_loss, pull_loss
         elif mark == 2:
             self.train()
             # a dictionary of parameters that will be updated in the inner loop
@@ -390,21 +404,14 @@ class MAML(Module):
                 mmd_loss = mmd.mmd(pair1_feat_src_mmd,pair1_feat_tgt_mmd)
 
                 
-                
-                
             self.train(meta_train)
             return cls_loss, mmd_loss
         
         else:
             self.eval()
-            src_trn_data, src_trn_label = trn_group
+            src_trn_data, src_trn_label = tst_data
             logits, feat = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
-            devices=feat.device
-            self.gate=self.gate.to(devices)
-            logit_gate=feat*self.gate
-            logit_gate=self._classifier_forward(logit_gate,OrderedDict(self.named_parameters()), 0)
-            
-            return logit_gate, feat
+            return logits, feat
 
     def _diff_loss(self, data1, data2):
         data1=data1.view(data1.shape[0], data1.shape[1], -1)

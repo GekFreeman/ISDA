@@ -21,7 +21,7 @@ def load_testing(root_path, dir, batch_size, kwargs):
         [transforms.Resize([224, 224]),
          transforms.ToTensor()])
     data = datasets.ImageFolder(root=os.path.join(root_path, dir), transform=transform)
-    test_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, drop_last=True, **kwargs)
+    test_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=False, drop_last=False, **kwargs)
     return test_loader
 
 def load_training_index(root_path, dir, batch_size, indices, kwargs, target=False, pseudo=None):
