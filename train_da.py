@@ -19,13 +19,13 @@ import models
 import yaml
 from tqdm import tqdm
 import torch.nn as nn
-import tensorflow as tf
+#import tensorflow as tf
 
-num_gpu=[0,1,3]
+num_gpu=[0,1]
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in num_gpu)
 
 # Training settings
-batch_size = 48
+batch_size =48
 iteration = 10000
 lr = [0.001, 0.01]
 LEARNING_RATE = 0.001
@@ -34,7 +34,7 @@ cuda = True
 seed = 8
 log_interval = 10
 l2_decay = 5e-4
-root_path = "/root/share/Original_images/"
+root_path ="/userhome/chengyl/UDA/multi-source/dataset/office31_raw_image/Original_images/"
 source1_name = "webcam"
 source2_name = 'dslr'
 sources = ["webcam", "dslr"]
@@ -57,7 +57,7 @@ torch.manual_seed(seed)
 if cuda:
     torch.cuda.manual_seed(seed)
 
-kwargs = {'num_workers': 0, 'pin_memory': True} if cuda else {}
+kwargs = {'num_workers':4, 'pin_memory': True} if cuda else {}
 
 def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False, epochs=10, writer=None):
     new_source_name = source_name
@@ -92,7 +92,7 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
                    meta_train=False, mark=0)
             mmd_loss = mmd_loss.mean()
             cls_loss = cls_loss.mean()
-            gamma = 2 / (1 + math.exp(-10 * (i + iters) / (iteration * epochs))) - 1 # 0.2
+            gamma = 0#2 / (1 + math.exp(-10 * (i + iters) / (iteration * epochs))) - 1 # 0.2
             loss = gamma * mmd_loss + cls_loss
             loss.backward()
             optimizer.step()
@@ -240,8 +240,8 @@ def train(config):
         end = time.time()
         print("HNSW:", end - start)
         
-        cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size // 2, kwargs)
-        cls_target_loader = data_loader.load_training(root_path, target_name, batch_size // 2, kwargs)
+        cls_source1_loader = data_loader.load_training(root_path, source_name, batch_size //2 , kwargs)
+        cls_target_loader = data_loader.load_training(root_path, target_name, batch_size //2, kwargs)
         
         ####meta-learning
         iters = 0
@@ -255,16 +255,16 @@ def train(config):
             
             # meta-training dataloader
             tgt_idx, src_indices = index_generate_sim(tgt_idx=tgt_spt_idx, src_idx=tgt_spt_src, src_prob=tgt_spt_src_prob)
-            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_idx, kwargs)
-            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_indices, kwargs)
+            pair1_target1_loader = data_loader.load_training_index(root_path, target_name, batch_size//2, tgt_idx, kwargs)
+            pair1_source1_loader = data_loader.load_training_index(root_path, source_name, batch_size //2, src_indices, kwargs)
 
             src_qry_idx1, _, src_qry_idx2, _ = index_generate_diff(src_indices, src_qry_label[src_indices], shuffle=False)
-            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size // 4, src_qry_idx2, kwargs)
+            pair2_source1_loader2 = data_loader.load_training_index(root_path, source_name, batch_size//2 , src_qry_idx2, kwargs)
 
             # meta-testing dataloader
             tgt_qry_idx1, tgt_qry_label1, tgt_qry_idx2, tgt_qry_label2 = index_generate_diff(tgt_qry_idx, tgt_qry_label, shuffle=True)
-            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
-            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size // 4, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
+            pair_3_target_loader1 = data_loader.load_training_index(root_path, target_name, batch_size//2 , tgt_qry_idx1, kwargs, target=True, pseudo=tgt_qry_label1)
+            pair_3_target_loader2 = data_loader.load_training_index(root_path, target_name, batch_size//2, tgt_qry_idx2, kwargs, target=True, pseudo=tgt_qry_label2)    
 
 
             pair1_iter_a = iter(pair1_target1_loader)
@@ -280,11 +280,14 @@ def train(config):
             
             ############### Meta-Trainging
             it = 0
+            optimizer.param_groups[0]['lr'] = lr[0] / ( 2 *math.pow((1 + 10* (it +iters ) / (iteration * epochs)), 0.75))
+            optimizer.param_groups[1]['lr'] = lr[1] / (2 *math.pow((1 + 10* (it +iters ) / (iteration  * epochs )), 0.75))
+            optimizer.param_groups[2]['lr'] = lr[1] / (2 *math.pow((1 + 10*(it +iters) / (iteration  * epochs)), 0.75))
             for data in tqdm(cls_source1_loader, desc='meta-train', leave=False):
 
-                optimizer.param_groups[0]['lr'] = lr[0] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
+                """optimizer.param_groups[0]['lr'] = lr[0] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
                 optimizer.param_groups[1]['lr'] = lr[1] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
-                optimizer.param_groups[2]['lr'] = lr[1] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))
+                optimizer.param_groups[2]['lr'] = lr[1] / (2 * math.pow((1 + 10 * (it + iters) / (iteration * epochs)), 0.75))"""
                 
                 pair1_tgt_data, pair1_tgt_label,  pair1_iter_a = save_iter(pair1_iter_a, pair1_target1_loader)
                 
@@ -302,33 +305,52 @@ def train(config):
                 pair3_tgt_data1, pair3_tgt_label1, pair3_iter_a = save_iter(pair3_iter_a, pair_3_target_loader1)
                 pair3_tgt_data2, pair3_tgt_label2, pair3_iter_b = save_iter(pair3_iter_b, pair_3_target_loader2)
                 tst_pair3 = [pair3_tgt_data1, pair3_tgt_label1, pair3_tgt_data2, pair3_tgt_label2]
-                
-                cls_loss, mmd_loss = model(trn_pair1,
+                optimizer.zero_grad()
+                if epoch<10:
+                    cls_loss, mmd_loss,diff_loss = model(trn_pair1,
                                trn_pair2,
                                trn_group,
                                tst_pair3,
                                inner_args,
                                meta_train=True)
-                cls_loss = torch.mean(cls_loss)
-                mmd_loss = torch.mean(mmd_loss)
+                    cls_loss = torch.mean(cls_loss)
+                    mmd_loss = torch.mean(mmd_loss)
+                    diff_loss=torch.mean(diff_loss)
 #                 gamma = 2 / (1 + math.exp(-10 * (it + iters) / (iteration * epochs))) - 1 # 0.2
-                gamma = 0.2
-                loss = cls_loss + gamma * mmd_loss
-                loss = torch.mean(loss)
-                optimizer.zero_grad()
-                loss.backward()
+                    gamma =1
+                    loss = cls_loss + gamma * mmd_loss# +gamma * diff_loss# 
+                    loss =loss.mean()# torch.mean(loss)
+                    loss.backward()
+                    
+                else:
+                    cls_loss, mmd_loss= model(trn_pair1,
+                               trn_pair2,
+                               trn_group,
+                               tst_pair3,
+                               inner_args,
+                               meta_train=True,mark=2)
+                    cls_loss = torch.mean(cls_loss)
+                    mmd_loss = torch.mean(mmd_loss)
+#                 gamma = 2 / (1 + math.exp(-10 * (it + iters) / (iteration * epochs))) - 1 # 0.2
+                    gamma =1
+                    loss = cls_loss + gamma * mmd_loss
+                    loss =loss.mean()# torch.mean(loss)
+                    loss.backward()                    
                 writer.add_scalar("loss/cls_loss", cls_loss.item(), iters)
                 writer.add_scalar("loss/mmd_loss", mmd_loss.item(), iters)
                 writer.add_scalar("loss/total_loss", loss.item(), iters)
                 writer.add_scalar('parameters/lr', optimizer.param_groups[0]['lr'], iters)
                 writer.add_scalar('parameters/gamma', gamma, iters)
+                
 #                 for param in optimizer.param_groups[0]['params']:
 #                     nn.utils.clip_grad_value_(param, 10)
                 optimizer.step()
                 writer.flush()
                 iters += len(data)
                 it += len(data)
-        
+            print(optimizer.param_groups[2]['lr'])
+            print("epoch:",epoch,"cls_loss:",cls_loss.item(),"mmd_loss:",mmd_loss.item())
+            
             src_acc = test_acc(model, source1_test_loader, source_name, source_type="Source")
             tgt_acc = test_acc(model, target_test_loader, target_name, source_type="Target")
             writer.add_scalar(f"Acc/source_{original_source_name}", src_acc, epoch)
@@ -338,7 +360,7 @@ def train(config):
 #                 lr_scheduler.step()
         
         ####fine-tune
-    model, optimizer, lr_scheduler = pretrain(model, optimizer, sources[0], original_target_name, lr_scheduler, epochs=config['pre_train'], log=True, writer=writer)
+        model, optimizer, lr_scheduler = pretrain(model, optimizer, original_source_name, original_target_name, lr_scheduler, epochs=config['fine_tune'], log=True, writer=writer)
                 
 def test_acc(model, data_loader, source_name, source_type="source", sampler=False):
     """
@@ -346,6 +368,7 @@ def test_acc(model, data_loader, source_name, source_type="source", sampler=Fals
     """
     test_loss = 0
     correct = 0
+    num=0
     with torch.no_grad():
         for data, target in data_loader:
             data, target = Variable(data), Variable(target)
@@ -355,17 +378,20 @@ def test_acc(model, data_loader, source_name, source_type="source", sampler=Fals
                    [data, target],
                    None,
                    None,
-                   meta_train=False, mark=2)
+                   meta_train=False, mark=3)
 
             pred = torch.nn.functional.softmax(pred, dim=1)
             pred = pred.data.max(1)[1].cpu()
             correct += pred.eq(target.cpu().data.view_as(pred)).cpu().sum()
+            num+=data.shape[0]
+            
+            
         if sampler:
             acc = 100. * correct / len(data_loader.sampler)
+            print(source_name, 'Accuracy: {}/{} ({:.4f}%)\n'.format(correct, len(data_loader.sampler), acc))
         else:
-            acc = 100. * correct / len(data_loader.dataset)
-#         print(source_dtype, ": ", source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
-#          correct, len(data_loader.dataset), acc))
+            acc = 100. * correct / num
+            print(source_name, 'Accuracy: {}/{} ({:.4f}%)\n'.format(correct, num, acc))
     return acc    
             
 
@@ -394,7 +420,7 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, 
                    [data, target],
                    None,
                    None,
-                   meta_train=False, mark=2)
+                   meta_train=False, mark=3)
 
             pred = torch.nn.functional.softmax(pred, dim=1)
             
@@ -431,7 +457,7 @@ def test_hnsw(model, data_loader, source_name, loader_type=1, idx_init=0, k=10, 
             domain_idx += len(data)
         
         acc = 100. * correct / len(data_loader.dataset)
-        print(source_name, 'Accuracy: {}/{} ({:.0f}%)\n'.format(
+        print(source_name, 'Accuracy: {}/{} ({:.4f}%)\n'.format(
          correct, len(data_loader.dataset), acc))
     if loader_type == 1:
         return idx, src_qry_label, acc
