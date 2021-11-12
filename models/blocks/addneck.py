@@ -45,8 +45,9 @@ class ADDneck(Module):
 
         out = self.conv3(out, get_child_dict(params, 'conv3'))
         out = self.bn3(out, get_child_dict(params, 'bn3'), episode)
-        out = self.avgpool(out)
-        out = self.relu(out).flatten(1)
+        out = self.relu(out)
+      #  out = self.avgpool(out)
+      #  out = out.view(out.size(0),-1)
         return out
     
     def get_out_dim(self):
