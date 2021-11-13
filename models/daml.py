@@ -269,7 +269,7 @@ class MAML(Module):
         
         if mark == 0:
             self.train()
-            src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label   = trn_group
+            src_trn_data, src_trn_label, tgt_trn_data, tgt_trn_label   =tst_data# trn_group
             src_trn_data, src_trn_label = src_trn_data.cuda(), src_trn_label.cuda()
             tgt_trn_data, tgt_trn_label = tgt_trn_data.cuda(), tgt_trn_label.cuda()
             logits, feat_src = self._inner_forward(src_trn_data, OrderedDict(self.named_parameters()), 0)
