@@ -84,10 +84,14 @@ def pretrain(model, optimizer, source_name, target_name, lr_scheduler, log=False
             
             optimizer.zero_grad()
 
-            cls_loss, mmd_loss = model(None,
+            """cls_loss, mmd_loss = model(None,
                    None,
                    [source_data, source_label, target_data, target_label],
                    None,
+                   None,
+                   meta_train=False, mark=0)"""
+            cls_loss, mmd_loss = model(None,
+                   [source_data, source_label, target_data, target_label],
                    None,
                    meta_train=False, mark=0)
             mmd_loss = mmd_loss.mean()
